@@ -195,16 +195,6 @@ if [[ "${do_poll:-}" == 1 ]]; then
   fi
   STATE_DIR="$STATE_DIR_REAL"
 
-  # --- Check for cached final result (idempotent) ---
-  if [[ -f "$STATE_DIR/final.txt" ]]; then
-    cat "$STATE_DIR/final.txt"
-    # Also replay review.txt existence info on stderr
-    if [[ -f "$STATE_DIR/review.txt" ]]; then
-      echo "[cached] Review available in $STATE_DIR/review.txt" >&2
-    fi
-    exit $EXIT_SUCCESS
-  fi
-
   # --- Read state ---
   if [[ ! -f "$STATE_DIR/state.json" ]]; then
     echo "POLL:failed:0s:1:state.json not found"
@@ -236,18 +226,27 @@ print('OK' if expected == actual else 'MISMATCH')
     exit $EXIT_ERROR
   fi
 
+  # --- Check for cached final result (idempotent, after validation) ---
+  if [[ -f "$STATE_DIR/final.txt" ]]; then
+    cat "$STATE_DIR/final.txt"
+    if [[ -f "$STATE_DIR/review.txt" ]]; then
+      echo "[cached] Review available in $STATE_DIR/review.txt" >&2
+    fi
+    exit $EXIT_SUCCESS
+  fi
+
   # Parse state.json with python3
   STATE_VALS=$(python3 -c "
-import sys, json
+import sys, json, time
 with open(sys.argv[1]) as f:
     s = json.load(f)
-print(s['pid'])
-print(s['pgid'])
+print(s.get('pid', ''))
+print(s.get('pgid', ''))
 print(s.get('watchdog_pid', ''))
-print(s['timeout'])
-print(s['started_at'])
-print(s['last_line_count'])
-print(s['stall_count'])
+print(s.get('timeout', 540))
+print(s.get('started_at', int(time.time())))
+print(s.get('last_line_count', 0))
+print(s.get('stall_count', 0))
 print(s.get('thread_id', ''))
 " "$STATE_DIR/state.json")
 
@@ -286,6 +285,43 @@ print(s.get('thread_id', ''))
     NEW_STALL_COUNT=0
   fi
 
+  # --- Helper: verify PID belongs to codex before killing ---
+  # Uses ps -o args= to check full command line for "codex exec" pattern.
+  # Verifies PGID matches expected value to prevent killing wrong process group.
+  # Falls back to kill-by-existence if ps is unavailable (e.g., sandboxed environments).
+  verify_and_kill_codex() {
+    local pid="$1" pgid="$2"
+    if ! kill -0 "$pid" 2>/dev/null; then return 0; fi
+    local args current_pgid
+    args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+    if [[ -z "$args" ]]; then
+      # ps unavailable — fallback to kill-by-existence (original behavior)
+      kill -TERM -"$pgid" 2>/dev/null || true
+      return 0
+    fi
+    if [[ "$args" == *"codex exec"* ]]; then
+      # Verify PGID matches before killing the group
+      current_pgid=$(ps -p "$pid" -o pgid= 2>/dev/null | tr -d ' ' || true)
+      if [[ "$current_pgid" == "$pgid" ]]; then
+        kill -TERM -"$pgid" 2>/dev/null || true
+      fi
+    fi
+  }
+  verify_and_kill_watchdog() {
+    local pid="$1"
+    if ! kill -0 "$pid" 2>/dev/null; then return 0; fi
+    local args
+    args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+    if [[ -z "$args" ]]; then
+      # ps unavailable — fallback
+      kill "$pid" 2>/dev/null || true
+      return 0
+    fi
+    if [[ "$args" == *python* && "$args" == *"time.sleep"* ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  }
+
   # --- Helper: write final.txt and kill processes ---
   write_final_and_cleanup() {
     local final_content="$1"
@@ -293,13 +329,11 @@ print(s.get('thread_id', ''))
     final_tmp=$(mktemp "$STATE_DIR/final.txt.XXXXXX")
     printf '%s' "$final_content" > "$final_tmp"
     mv "$final_tmp" "$STATE_DIR/final.txt"
-    # Kill Codex process group if alive
-    if kill -0 "$CODEX_PID" 2>/dev/null; then
-      kill -TERM -"$CODEX_PGID" 2>/dev/null || true
-    fi
-    # Kill watchdog if alive
-    if [[ -n "$WATCHDOG_PID" ]] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
-      kill "$WATCHDOG_PID" 2>/dev/null || true
+    # Kill Codex process group if verified
+    verify_and_kill_codex "$CODEX_PID" "$CODEX_PGID"
+    # Kill watchdog if verified
+    if [[ -n "$WATCHDOG_PID" ]]; then
+      verify_and_kill_watchdog "$WATCHDOG_PID"
     fi
   }
 
@@ -524,23 +558,40 @@ print('OK' if expected == actual else 'MISMATCH')
 import sys, json
 with open(sys.argv[1]) as f:
     s = json.load(f)
+print(s.get('pid', ''))
 print(s.get('pgid', ''))
 print(s.get('watchdog_pid', ''))
 " "$STATE_DIR/state.json" 2>/dev/null || true)
 
-    CODEX_PGID=$(echo "$STOP_VALS" | sed -n '1p')
-    WATCHDOG_PID=$(echo "$STOP_VALS" | sed -n '2p')
+    CODEX_PID=$(echo "$STOP_VALS" | sed -n '1p')
+    CODEX_PGID=$(echo "$STOP_VALS" | sed -n '2p')
+    WATCHDOG_PID=$(echo "$STOP_VALS" | sed -n '3p')
 
-    # Kill Codex process group
-    if [[ -n "$CODEX_PGID" ]]; then
-      kill -TERM -"$CODEX_PGID" 2>/dev/null || true
-      sleep 1
-      kill -KILL -"$CODEX_PGID" 2>/dev/null || true
+    # Kill Codex process group (verify identity + PGID via ps to avoid PID reuse)
+    if [[ -n "$CODEX_PID" && -n "$CODEX_PGID" ]] && kill -0 "$CODEX_PID" 2>/dev/null; then
+      STOP_ARGS=$(ps -p "$CODEX_PID" -o args= 2>/dev/null || true)
+      if [[ -z "$STOP_ARGS" ]]; then
+        # ps unavailable — fallback to kill-by-existence
+        kill -TERM -"$CODEX_PGID" 2>/dev/null || true
+        sleep 1
+        kill -KILL -"$CODEX_PGID" 2>/dev/null || true
+      elif [[ "$STOP_ARGS" == *"codex exec"* ]]; then
+        # Verify PGID matches before killing the group
+        STOP_CURRENT_PGID=$(ps -p "$CODEX_PID" -o pgid= 2>/dev/null | tr -d ' ' || true)
+        if [[ "$STOP_CURRENT_PGID" == "$CODEX_PGID" ]]; then
+          kill -TERM -"$CODEX_PGID" 2>/dev/null || true
+          sleep 1
+          kill -KILL -"$CODEX_PGID" 2>/dev/null || true
+        fi
+      fi
     fi
 
-    # Kill watchdog
+    # Kill watchdog (verify identity)
     if [[ -n "$WATCHDOG_PID" ]] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
-      kill "$WATCHDOG_PID" 2>/dev/null || true
+      STOP_WD_ARGS=$(ps -p "$WATCHDOG_PID" -o args= 2>/dev/null || true)
+      if [[ -z "$STOP_WD_ARGS" || ( "$STOP_WD_ARGS" == *python* && "$STOP_WD_ARGS" == *"time.sleep"* ) ]]; then
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+      fi
     fi
   fi
 

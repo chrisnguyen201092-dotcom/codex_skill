@@ -54,13 +54,31 @@ done
 # Check hooks.json contains the correct version string
 HOOKS_FILE="$PLUGIN_DIR/hooks/hooks.json"
 if [[ -f "$HOOKS_FILE" ]]; then
-  # hooks.json stores the version with escaped quotes: CODEX_RUNNER_VERSION=\"1\"
-  ESCAPED_VERSION=$(echo "$SOURCE_VERSION" | sed 's/"/\\\\"/g')
-  if ! grep -q "$SOURCE_VERSION" "$HOOKS_FILE" 2>/dev/null && ! grep -q "$ESCAPED_VERSION" "$HOOKS_FILE" 2>/dev/null; then
+  # hooks.json stores the script inside a JSON string — grep the raw file for common
+  # escape variants, or decode and check the actual command content via python3.
+  HOOKS_CHECK=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+version = sys.argv[2]
+escaped = version.replace('\"', '\\\\\"')
+# Iterate all hooks to find version string in any command
+found = False
+for hook_group in data.get('hooks', []):
+    for hook in hook_group.get('hooks', []):
+        cmd = hook.get('command', '')
+        if version in cmd or escaped in cmd:
+            found = True
+            break
+    if found:
+        break
+print('OK' if found else 'DRIFT')
+" "$HOOKS_FILE" "$SOURCE_VERSION" 2>/dev/null || echo "ERROR")
+  if [[ "$HOOKS_CHECK" == "OK" ]]; then
+    echo "OK: $HOOKS_FILE"
+  else
     echo "DRIFT: $HOOKS_FILE does not contain $SOURCE_VERSION" >&2
     ERRORS=$((ERRORS + 1))
-  else
-    echo "OK: $HOOKS_FILE"
   fi
 else
   echo "WARNING: Hooks file not found: $HOOKS_FILE" >&2
