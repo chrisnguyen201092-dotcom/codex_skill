@@ -16,39 +16,189 @@ This skill sends uncommitted changes to Codex CLI for **review only**. Codex rea
 - There must be uncommitted changes (staged or unstaged) in the working directory.
 - The Codex CLI (`codex`) must be installed and available in PATH.
 
+## Codex Runner Script
+
+This skill uses `codex-runner.sh` to handle all Codex CLI execution. The script runs foreground, manages polling/extraction/cleanup internally, and outputs structured results.
+
+### Bootstrap Logic (inline in every Bash call)
+
+Every Bash call that invokes the runner must include this resolve block at the top:
+
+```bash
+RUNNER="${CODEX_RUNNER:-$HOME/.local/bin/codex-runner.sh}"
+NEED_INSTALL=0
+if [ -n "$CODEX_RUNNER" ] && test -x "$CODEX_RUNNER"; then
+  if ! grep -q 'CODEX_RUNNER_VERSION="1"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
+elif ! test -x "$RUNNER"; then NEED_INSTALL=1
+elif ! grep -q 'CODEX_RUNNER_VERSION="1"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
+fi
+if [ "$NEED_INSTALL" = 1 ]; then
+  mkdir -p "$HOME/.local/bin"
+  TMP=$(mktemp "$HOME/.local/bin/codex-runner.XXXXXX")
+  cat > "$TMP" <<'RUNNER_SCRIPT'
+<EMBEDDED_SCRIPT_CONTENT>
+RUNNER_SCRIPT
+  chmod +x "$TMP"
+  mv "$TMP" "$HOME/.local/bin/codex-runner.sh"
+  RUNNER="$HOME/.local/bin/codex-runner.sh"
+fi
+```
+
+Where `<EMBEDDED_SCRIPT_CONTENT>` is the full content of the codex-runner.sh script below:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# IMPORTANT: Bump CODEX_RUNNER_VERSION when changing this script.
+# embed-runner.sh checks this version string across all embed locations.
+CODEX_RUNNER_VERSION="1"
+
+WORKING_DIR=""
+EFFORT="high"
+THREAD_ID=""
+TIMEOUT=540
+POLL_INTERVAL=15
+
+EXIT_SUCCESS=0
+EXIT_ERROR=1
+EXIT_TIMEOUT=2
+EXIT_TURN_FAILED=3
+EXIT_STALLED=4
+EXIT_CODEX_NOT_FOUND=5
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode) shift 2 ;;  # accepted but ignored for backwards compatibility
+    --working-dir) WORKING_DIR="$2"; shift 2 ;;
+    --effort) EFFORT="$2"; shift 2 ;;
+    --thread-id) THREAD_ID="$2"; shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --poll-interval) POLL_INTERVAL="$2"; shift 2 ;;
+    --version) echo "codex-runner $CODEX_RUNNER_VERSION"; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit $EXIT_ERROR ;;
+  esac
+done
+
+if [[ -z "$WORKING_DIR" ]]; then echo "Error: --working-dir is required" >&2; exit $EXIT_ERROR; fi
+if ! command -v codex &>/dev/null; then echo "Error: codex CLI not found in PATH" >&2; exit $EXIT_CODEX_NOT_FOUND; fi
+
+PROMPT=$(cat)
+if [[ -z "$PROMPT" ]]; then echo "Error: no prompt provided on stdin" >&2; exit $EXIT_ERROR; fi
+
+RUN_ID="$(date +%s)-$$"
+JSONL_FILE="/tmp/codex-runner-${RUN_ID}.jsonl"
+ERR_FILE="/tmp/codex-runner-${RUN_ID}.err"
+
+cleanup() {
+  local codex_pid_local="${CODEX_PID:-}"
+  if [[ -n "$codex_pid_local" ]] && kill -0 "$codex_pid_local" 2>/dev/null; then
+    kill "$codex_pid_local" 2>/dev/null || true
+    wait "$codex_pid_local" 2>/dev/null || true
+  fi
+  rm -f "$JSONL_FILE" "$ERR_FILE"
+}
+trap cleanup EXIT
+
+CODEX_PID=""
+if [[ -n "$THREAD_ID" ]]; then
+  # Resume mode: codex exec resume does not support --sandbox or -C flags.
+  # The sandbox setting from the initial session is preserved automatically.
+  cd "$WORKING_DIR"
+  echo "$PROMPT" | codex exec --skip-git-repo-check --json resume "$THREAD_ID" > "$JSONL_FILE" 2>"$ERR_FILE" &
+  CODEX_PID=$!
+else
+  echo "$PROMPT" | codex exec --skip-git-repo-check --json --sandbox read-only --config model_reasoning_effort="$EFFORT" -C "$WORKING_DIR" > "$JSONL_FILE" 2>"$ERR_FILE" &
+  CODEX_PID=$!
+fi
+
+ELAPSED=0
+STALL_COUNT=0
+LAST_LINE_COUNT=0
+
+while true; do
+  sleep "$POLL_INTERVAL"
+  ELAPSED=$((ELAPSED + POLL_INTERVAL))
+  if [[ $ELAPSED -ge $TIMEOUT ]]; then
+    echo "Error: timeout after ${TIMEOUT}s" >&2
+    kill "$CODEX_PID" 2>/dev/null || true
+    exit $EXIT_TIMEOUT
+  fi
+  if ! kill -0 "$CODEX_PID" 2>/dev/null; then
+    wait "$CODEX_PID" 2>/dev/null || true
+    CODEX_PID=""
+    break
+  fi
+  if [[ -f "$JSONL_FILE" ]]; then
+    CURRENT_LINE_COUNT=$(wc -l < "$JSONL_FILE" 2>/dev/null || echo 0)
+    CURRENT_LINE_COUNT=$(echo "$CURRENT_LINE_COUNT" | tr -d ' ')
+  else
+    CURRENT_LINE_COUNT=0
+  fi
+  if [[ "$CURRENT_LINE_COUNT" -eq "$LAST_LINE_COUNT" ]]; then
+    STALL_COUNT=$((STALL_COUNT + 1))
+  else
+    STALL_COUNT=0
+    LAST_LINE_COUNT=$CURRENT_LINE_COUNT
+  fi
+  if [[ $STALL_COUNT -ge 12 ]]; then
+    echo "Error: stalled — no new output for ~3 minutes" >&2
+    kill "$CODEX_PID" 2>/dev/null || true
+    exit $EXIT_STALLED
+  fi
+  if [[ -f "$JSONL_FILE" ]]; then
+    LAST_EVENT=$(tail -1 "$JSONL_FILE" 2>/dev/null || true)
+    if [[ -n "$LAST_EVENT" ]]; then
+      EVENT_TYPE=$(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('type',''))" 2>/dev/null || true)
+      case "$EVENT_TYPE" in
+        turn.completed) wait "$CODEX_PID" 2>/dev/null || true; CODEX_PID=""; break ;;
+        turn.failed) ERROR_MSG=$(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('error',{}).get('message','unknown'))" 2>/dev/null || true); echo "Error: $ERROR_MSG" >&2; wait "$CODEX_PID" 2>/dev/null || true; exit $EXIT_TURN_FAILED ;;
+        turn.started) echo "Codex is thinking..." >&2 ;;
+        item.completed) ITEM_TYPE=$(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('item',{}).get('type',''))" 2>/dev/null || true); case "$ITEM_TYPE" in reasoning) echo "Codex thinking: $(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('item',{}).get('text',''))" 2>/dev/null || true)" >&2 ;; command_execution) echo "Codex ran: $(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('item',{}).get('command',''))" 2>/dev/null || true)" >&2 ;; esac ;;
+        item.started) ITEM_TYPE=$(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('item',{}).get('type',''))" 2>/dev/null || true); if [[ "$ITEM_TYPE" == "command_execution" ]]; then echo "Codex running: $(echo "$LAST_EVENT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('item',{}).get('command',''))" 2>/dev/null || true)" >&2; fi ;;
+      esac
+    fi
+  fi
+done
+
+if [[ ! -f "$JSONL_FILE" ]]; then echo "Error: no output" >&2; test -f "$ERR_FILE" && cat "$ERR_FILE" >&2; exit $EXIT_ERROR; fi
+if grep -q '"type":"turn.failed"' "$JSONL_FILE" 2>/dev/null; then ERROR_MSG=$(grep '"type":"turn.failed"' "$JSONL_FILE" | tail -1 | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('error',{}).get('message','unknown'))" 2>/dev/null || true); echo "Error: Codex turn failed: $ERROR_MSG" >&2; exit $EXIT_TURN_FAILED; fi
+if ! grep -q '"type":"turn.completed"' "$JSONL_FILE" 2>/dev/null; then echo "Error: no turn.completed" >&2; test -f "$ERR_FILE" && test -s "$ERR_FILE" && cat "$ERR_FILE" >&2; exit $EXIT_ERROR; fi
+
+EXTRACTED_THREAD_ID=$(grep '"thread_id"' "$JSONL_FILE" 2>/dev/null | head -1 | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('thread_id',''))" 2>/dev/null || true)
+REVIEW_TEXT=$(grep '"type":"agent_message"' "$JSONL_FILE" 2>/dev/null | tail -1 | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('item',{}).get('text',''))" 2>/dev/null || true)
+if [[ -z "$REVIEW_TEXT" ]]; then echo "Error: no agent_message" >&2; exit $EXIT_ERROR; fi
+if [[ -z "$EXTRACTED_THREAD_ID" ]]; then echo "Error: no thread_id" >&2; exit $EXIT_ERROR; fi
+
+REVIEW_JSON=$(THREAD_ID_VAL="$EXTRACTED_THREAD_ID" python3 -c "import sys,json,os; text=sys.stdin.read(); print(json.dumps({'thread_id':os.environ.get('THREAD_ID_VAL',''),'review':text,'status':'success'}))" <<< "$REVIEW_TEXT")
+echo "CODEX_RESULT:${REVIEW_JSON}"
+exit 0
+```
+
+### Runner Output Format
+
+The runner outputs a single line on stdout prefixed with `CODEX_RESULT:` followed by JSON:
+```
+CODEX_RESULT:{"thread_id":"...","review":"...","status":"success"}
+```
+
+Progress updates go to stderr (visible to user in Bash tool output).
+
+### Exit Codes
+- `0` = success
+- `1` = general error
+- `2` = timeout (540s default)
+- `3` = codex turn failed
+- `4` = codex stalled (~3 min no output)
+- `5` = codex not found in PATH
+
 ## Step 1: Gather Configuration
 
 Ask the user (via `AskUserQuestion`) **only one question**:
 - Which reasoning effort to use (`xhigh`, `high`, `medium`, or `low`)
 
 **Do NOT ask** which model to use — always use Codex's default model (no `-m` flag).
-**Do NOT ask** how many rounds — the loop runs automatically until consensus (initial target: 3 rounds, auto-extends until APPROVE or stalemate).
-
-## Progress Monitoring Strategy
-
-Codex runs in background — no hardcoded timeout needed. Instead, Claude Code polls the JSONL output file periodically and reports progress to the user.
-
-### Polling Loop
-
-1. Launch Codex with `run_in_background: true` in the Bash tool (see Step 3 for the exact command). The Bash tool will return a `task_id` for the background process — **save this `task_id`** for cleanup after extraction. The first line of output will be the absolute path to the JSONL file — **save this path** for use in all subsequent poll and extract commands.
-2. **Every ~60 seconds**, poll the output file with the Bash tool using the **absolute path** saved in step 1. **You MUST wait before each poll** by running `sleep 60` first in the same Bash call:
-   ```bash
-   sleep 60 && tail -20 /tmp/codex-review-xxxx.jsonl
-   ```
-3. Parse the last few JSONL lines and report a **short progress update** to the user (plain text, not tool output). Examples:
-   - "Codex is thinking... (*Analyzing error handling patterns*)"
-   - "Codex is running: `git diff HEAD`"
-   - "Codex finished reading the diff, now analyzing..."
-4. **Check for any terminal event**: when `turn.completed`, `turn.failed`, or process exit (no new output + task gone) is detected — **your very first action MUST be calling `TaskOutput(task_id, block:true, timeout=10000)`** before doing anything else (ignore the returned output). This dequeues the background task completion notification from the runtime's internal queue. **If you skip this or delay it, the notification will leak and print "Background command completed" at the end of the session.** This applies to ALL terminal paths, not just success. Then:
-   - If `turn.completed`: proceed to extract the review.
-   - If `turn.failed`: extract `error.message` from the event, report it to the user, and stop polling.
-5. **Check for process failure**: if the background Bash task itself has exited with an error (non-zero exit, or the process is gone but no `turn.completed` or `turn.failed`), **immediately call `TaskOutput(task_id, block:true, timeout=10000)` first** (same reason — dequeue the notification), then read the stderr file and report the error to the user.
-
-### Stall Detection
-
-If 3 consecutive polls (~3 minutes) show **no new lines** in the output file, Codex may be stuck. In that case:
-1. Report to the user: "Codex appears to be stalled — no new output for ~3 minutes."
-2. Ask the user (via `AskUserQuestion`): **Wait longer** or **Abort and retry**.
+**Do NOT ask** how many rounds — the loop runs automatically until consensus.
 
 ## Step 2: Collect Uncommitted Changes
 
@@ -82,62 +232,45 @@ If 3 consecutive polls (~3 minutes) show **no new lines** in the output file, Co
 
 ## Step 3: Send Changes to Codex for Review (Round 1)
 
-### Running Codex with Progress Monitoring
-
-Run Codex in background with `--json` output to a temp file so you can monitor progress and report it to the user. Use the Bash tool with `run_in_background: true`:
+Run the codex-runner with the bootstrap block. Use the Bash tool with `timeout: 600000`:
 
 ```bash
-RUN_ID=$(date +%s)-$$ && CODEX_OUTPUT=/tmp/codex-review-$RUN_ID.jsonl && CODEX_ERR=/tmp/codex-review-$RUN_ID.err && echo "$CODEX_OUTPUT $CODEX_ERR" && codex exec --skip-git-repo-check --json --sandbox read-only --config model_reasoning_effort="<EFFORT>" -C <WORKING_DIR> 2>"$CODEX_ERR" <<'EOF' > "$CODEX_OUTPUT"
-<REVIEW_PROMPT content here>
+RUNNER="${CODEX_RUNNER:-$HOME/.local/bin/codex-runner.sh}"
+NEED_INSTALL=0
+if [ -n "$CODEX_RUNNER" ] && test -x "$CODEX_RUNNER"; then
+  if ! grep -q 'CODEX_RUNNER_VERSION="1"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
+elif ! test -x "$RUNNER"; then NEED_INSTALL=1
+elif ! grep -q 'CODEX_RUNNER_VERSION="1"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
+fi
+if [ "$NEED_INSTALL" = 1 ]; then
+  mkdir -p "$HOME/.local/bin"
+  TMP=$(mktemp "$HOME/.local/bin/codex-runner.XXXXXX")
+  cat > "$TMP" <<'RUNNER_SCRIPT'
+<PASTE FULL SCRIPT FROM ABOVE>
+RUNNER_SCRIPT
+  chmod +x "$TMP"
+  mv "$TMP" "$HOME/.local/bin/codex-runner.sh"
+  RUNNER="$HOME/.local/bin/codex-runner.sh"
+fi
+"$RUNNER" --working-dir <WORKING_DIR> --effort <EFFORT> <<'EOF'
+<REVIEW_PROMPT>
 EOF
 ```
 
-**IMPORTANT**: The Bash tool returns a `task_id` for the background process — **save this `task_id`** (you will need it to stop the background task after extraction). The first line of stdout contains both absolute paths (JSONL and ERR, space-separated). **Save both paths** — you will need them for all subsequent poll, extract, and cleanup commands. Each Bash tool call is a new shell, so shell variables do not persist between calls. Always use the literal absolute paths (e.g., `/tmp/codex-review-1737000000-12345.jsonl`).
+**IMPORTANT**: Use `timeout: 600000` in the Bash tool call (10 min max). The script runs foreground — no `run_in_background` needed.
 
-Also save the `thread_id` from the first `thread.started` event in the JSONL — you will need it to resume the correct session in subsequent rounds (instead of `resume --last` which may pick the wrong session).
+Save the `thread_id` from the output JSON — you will need it for subsequent rounds.
 
-Then **poll for progress** approximately every 60 seconds using the Bash tool to read the temp file (see "Progress Monitoring Strategy" section above for full details):
+### Parsing the Output
 
-```bash
-tail -5 /tmp/codex-review-XXXXXXXXXX.jsonl
+The last line of stdout will be:
+```
+CODEX_RESULT:{"thread_id":"...","review":"...","status":"success"}
 ```
 
-**How to interpret JSONL events and what to report to the user:**
+Extract the JSON after `CODEX_RESULT:` prefix. Get `thread_id` for resume and `review` for the review text.
 
-| Event | Meaning | Report to user |
-| --- | --- | --- |
-| `{"type":"turn.started"}` | Codex has started processing | "Codex is thinking..." |
-| `{"type":"item.completed","item":{"type":"reasoning",...}}` | Codex finished a thinking step | Report the `text` field (e.g., "Codex is analyzing the diff...") |
-| `{"type":"item.completed","item":{"type":"agent_message",...}}` | Codex produced a message | This may be an intermediate status message from Codex |
-| `{"type":"item.started","item":{"type":"command_execution",...}}` | Codex is running a command | "Codex is running: `<command>`" |
-| `{"type":"item.completed","item":{"type":"command_execution",...}}` | Command finished | "Codex finished running: `<command>`" |
-| `{"type":"turn.completed","usage":{...}}` | Codex is done | Extract final result |
-| `{"type":"turn.failed","error":{...}}` | Codex turn failed (network/auth/server) | Extract `error.message`, report to user, stop polling |
-
-When `turn.completed` appears, Codex is done. When `turn.failed` appears, Codex encountered an error — extract `error.message` from the event, report it to the user, and stop polling (do not continue waiting). Extract the final review by collecting all `agent_message` items from the JSONL. The last `agent_message` is typically the full review.
-
-**Extracting the final review** (use the saved absolute path):
-
-```bash
-grep '"type":"agent_message"' /tmp/codex-review-XXXXXXXXXX.jsonl | tail -1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['item']['text'])"
-```
-
-Clean up after extracting the result — this is **mandatory for ALL terminal paths** (`turn.completed`, `turn.failed`, process failure, stall-abort):
-
-1. **Dequeue notification (if not already done)**: call `TaskOutput` with the saved `task_id` and `block: true, timeout: 10000`. If you already called this in the polling loop (step 4), calling it again is safe — it will return immediately. This is a safety net: **the notification MUST be dequeued before your turn ends**, or it will print "Background command completed" at the end of the session.
-
-2. **Drain and stop the background Bash task**: call `TaskOutput` with the saved `task_id` and `block: false` to drain any remaining buffered output (ignore the content). Then call `TaskStop` with the same `task_id` to terminate the background task. If either call returns an error (task already exited), this is safe to ignore.
-
-3. **Remove temp files**:
-```bash
-rm -f /tmp/codex-review-XXXXXXXXXX.jsonl /tmp/codex-review-XXXXXXXXXX.err
-```
-
-**Why this matters**: Background task completion notifications are enqueued when a task exits. If this notification is not consumed by `TaskOutput(block:true)` before the current turn ends, Claude Code's runtime will flush it as a visible message ("Background command completed") at session end. The two-phase approach — dequeue in polling loop (step 4) + safety-net dequeue here — ensures the notification is always consumed regardless of which code path executes. Each round creates a new background task — you must clean up each one.
-
-**NOTE**: No `-m` flag — use Codex's default model. Always use `--sandbox read-only` — Codex only needs to read files and run `git diff`. The prompt instructs Codex to only review, not modify code.
-
-The `<REVIEW_PROMPT>` must follow this structure:
+### Review Prompt Template
 
 ```
 You are participating in a code review with Claude Code (Claude Opus 4.6).
@@ -159,12 +292,7 @@ Read the plan file for context on what these changes are supposed to achieve: <A
 <The user's original task/request>
 
 ## Session Context
-<Any important context from the conversation that Codex cannot access on its own:
-- User comments, preferences, or constraints
-- Architectural decisions discussed verbally
-- Clarifications the user provided
-- Special instructions or priorities
-- Specific files to focus on (if specified by the user)>
+<Any important context from the conversation that Codex cannot access on its own>
 
 (If there is no additional context, write "No additional context.")
 
@@ -219,17 +347,32 @@ After receiving Codex's review, you (Claude Code) must:
 
 ## Step 5: Continue the Debate (Rounds 2+)
 
-After applying fixes, resume the Codex session using the **saved `thread_id`** from the `thread.started` event in Round 1. Use the same background + polling pattern:
+Run the runner again with `--thread-id` for resume:
 
 ```bash
-RUN_ID=$(date +%s)-$$ && CODEX_OUTPUT=/tmp/codex-review-$RUN_ID.jsonl && CODEX_ERR=/tmp/codex-review-$RUN_ID.err && echo "$CODEX_OUTPUT $CODEX_ERR" && codex exec --skip-git-repo-check --json --sandbox read-only -C <WORKING_DIR> resume <THREAD_ID> 2>"$CODEX_ERR" <<'EOF' > "$CODEX_OUTPUT"
-<REBUTTAL_PROMPT content here>
+RUNNER="${CODEX_RUNNER:-$HOME/.local/bin/codex-runner.sh}"
+NEED_INSTALL=0
+if [ -n "$CODEX_RUNNER" ] && test -x "$CODEX_RUNNER"; then
+  if ! grep -q 'CODEX_RUNNER_VERSION="1"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
+elif ! test -x "$RUNNER"; then NEED_INSTALL=1
+elif ! grep -q 'CODEX_RUNNER_VERSION="1"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
+fi
+if [ "$NEED_INSTALL" = 1 ]; then
+  mkdir -p "$HOME/.local/bin"
+  TMP=$(mktemp "$HOME/.local/bin/codex-runner.XXXXXX")
+  cat > "$TMP" <<'RUNNER_SCRIPT'
+<PASTE FULL SCRIPT FROM ABOVE>
+RUNNER_SCRIPT
+  chmod +x "$TMP"
+  mv "$TMP" "$HOME/.local/bin/codex-runner.sh"
+  RUNNER="$HOME/.local/bin/codex-runner.sh"
+fi
+"$RUNNER" --working-dir <WORKING_DIR> --effort <EFFORT> --thread-id <THREAD_ID> <<'EOF'
+<REBUTTAL_PROMPT>
 EOF
 ```
 
-Save the new `task_id`, output path, and error path, then poll/extract/cleanup the same way as Step 3. Remember: each round creates a new background task with its own `task_id` — you must drain and stop each one after extracting its review.
-
-The `<REBUTTAL_PROMPT>` must follow this structure:
+### Rebuttal Prompt Template
 
 ```
 This is Claude Code (Claude Opus 4.6) responding to your review. I have applied fixes and want you to re-review.
@@ -311,46 +454,30 @@ Then ask the user (via `AskUserQuestion`):
 - **Request more rounds** - Continue debating specific concerns
 - **Review changes manually** - User wants to inspect the fixes themselves before deciding
 
-## Codex Command Reference
-
-| Action | Command |
-| --- | --- |
-| Initial review | `RUN_ID=$(date +%s)-$$ && CODEX_OUTPUT=/tmp/codex-review-$RUN_ID.jsonl && CODEX_ERR=/tmp/codex-review-$RUN_ID.err && echo "$CODEX_OUTPUT $CODEX_ERR" && codex exec --skip-git-repo-check --json --sandbox read-only --config model_reasoning_effort="<EFFORT>" -C <DIR> 2>"$CODEX_ERR" <<'EOF' ... EOF > "$CODEX_OUTPUT"` |
-| Subsequent rounds | `RUN_ID=$(date +%s)-$$ && CODEX_OUTPUT=/tmp/codex-review-$RUN_ID.jsonl && CODEX_ERR=/tmp/codex-review-$RUN_ID.err && echo "$CODEX_OUTPUT $CODEX_ERR" && codex exec --skip-git-repo-check --json --sandbox read-only -C <WORKING_DIR> resume <THREAD_ID> 2>"$CODEX_ERR" <<'EOF' ... EOF > "$CODEX_OUTPUT"` |
-| Poll progress | `tail -5 /tmp/codex-review-XXXXXXXXXX.jsonl` |
-| Extract final review | `grep '"type":"agent_message"' /tmp/codex-review-XXXXXXXXXX.jsonl \| tail -1 \| python3 -c "import sys,json; print(json.loads(sys.stdin.read())['item']['text'])"` |
-| Check errors on failure | `tail -20 /tmp/codex-review-XXXXXXXXXX.err` |
-| Stop background task | `TaskOutput(task_id=<SAVED_TASK_ID>, block=true, timeout=10000)` **immediately** on terminal event (dequeues notification — MUST happen before turn ends), then `TaskOutput(block=false)` + `TaskStop(task_id=<SAVED_TASK_ID>)` after extraction, then `TaskOutput(block=true, timeout=10000)` again as safety net in cleanup |
-
 ## Important Rules
 
-1. **Codex reads the diff and plan itself** - Do NOT paste diff content or plan content into the prompt. Just give Codex the plan file path and instruct it to run `git diff`. This avoids bloating the prompt and ensures Codex always sees the latest state.
-2. **Only send what Codex can't access** - The prompt should contain: file paths, user's original request, session context (user comments/constraints/preferences). NOT: diffs, file contents, code snippets.
-3. **Always `git add -N` untracked files first** - So new files appear in `git diff`. Without this, Codex won't see newly created files.
-4. **Always use heredoc (`<<'EOF'`) for prompts** - Never use `echo "<prompt>" |`. Heredoc with single-quoted delimiter prevents shell expansion of `$`, backticks, `"`, etc.
+1. **Codex reads the diff and plan itself** - Do NOT paste diff content or plan content into the prompt. Just give Codex the plan file path and instruct it to run `git diff`.
+2. **Only send what Codex can't access** - The prompt should contain: file paths, user's original request, session context. NOT: diffs, file contents, code snippets.
+3. **Always `git add -N` untracked files first** - So new files appear in `git diff`.
+4. **Always use heredoc (`<<'EOF'`) for prompts** - Heredoc with single-quoted delimiter prevents shell expansion.
 5. **Always provide the plan file path** - So Codex can cross-reference implementation against intent. If no plan exists, explicitly state that.
-6. **Always use `--sandbox read-only`** - Codex only needs to read files and run `git diff`. Sandbox prevents accidental writes.
-7. **Always use `-C <WORKING_DIR>`** - So Codex runs in the correct project directory.
-8. **Always use `--skip-git-repo-check`** - Required for Codex CLI operation.
-9. **Redirect stderr to file, not /dev/null** - Use `2>"$CODEX_ERR"` so errors can be inspected on failure. Never use `2>/dev/null`.
-10. **No `-m` flag** - Always use Codex's default model. If the user wants a different model, they configure it in Codex directly.
-11. **Use absolute paths for temp files** - Each Bash tool call is a new shell. `$CODEX_OUTPUT` does not persist. Save the absolute path from the first echo and use it literally in all subsequent commands.
-12. **Resume by thread ID, not `--last`** - Parse `thread_id` from the `thread.started` JSONL event and use `resume <THREAD_ID>` to avoid resuming the wrong session.
-13. **Handle repos with no HEAD** - Before running `git diff HEAD`, check `git rev-parse --verify HEAD`. If HEAD doesn't exist (fresh repo), use `git diff --cached` (staged) plus `git diff` (unstaged) instead of `git diff HEAD`.
-14. **Claude Code does all the fixing** - Codex identifies issues, Claude Code applies fixes. Codex is instructed via prompt not to modify files.
-15. **Be genuinely adversarial** - Don't blindly accept all of Codex's findings. Some flagged "issues" may be false positives. Push back with evidence when Codex is wrong.
-16. **Don't over-fix** - Only fix what's actually broken or risky. Don't add defensive code for impossible scenarios. Don't refactor working code that wasn't part of the changes.
-17. **Summarize after every round** - The user should always know what happened before the next round begins.
-18. **Respect the diff boundary** - Only review and fix code within the uncommitted changes. Don't expand scope to unrelated code unless a change introduces a bug in connected code.
-19. **Require structured output** - If Codex's response doesn't follow the required ISSUE-{N} format, ask it to reformat in the resume prompt.
-20. **Acknowledge completion then clean up after each round** - When polling detects any terminal event (`turn.completed`, `turn.failed`, or process exit), **your very first action** must be calling `TaskOutput(task_id, block:true, timeout=10000)` before extracting/reporting (ignore returned output). **This dequeues the completion notification — if skipped, it will print "Background command completed" at end of session.** This applies to ALL terminal paths — not just success. Then after extraction/reporting, always run full cleanup: `TaskOutput(task_id, block:true, timeout=10000)` (safety net) → `TaskOutput(task_id, block:false)` → `TaskStop(task_id)` → `rm -f`. Each round has its own `task_id` — handle each one.
+6. **No `-m` flag** - Always use Codex's default model.
+7. **Resume by thread ID** - Use the `thread_id` from the runner output JSON for subsequent rounds.
+8. **Handle repos with no HEAD** - Before running `git diff HEAD`, check `git rev-parse --verify HEAD`. If HEAD doesn't exist, use `git diff --cached` + `git diff` instead.
+9. **Claude Code does all the fixing** - Codex identifies issues, Claude Code applies fixes.
+10. **Be genuinely adversarial** - Don't blindly accept all of Codex's findings. Push back with evidence when Codex is wrong.
+11. **Don't over-fix** - Only fix what's actually broken or risky. Don't add defensive code for impossible scenarios.
+12. **Summarize after every round** - The user should always know what happened before the next round begins.
+13. **Respect the diff boundary** - Only review and fix code within the uncommitted changes.
+14. **Require structured output** - If Codex's response doesn't follow the ISSUE-{N} format, ask it to reformat in the resume prompt.
 
 ## Error Handling
-- If `git status --porcelain` shows no changes (no modified, staged, or untracked files), inform the user and stop.
-- If `git rev-parse --verify HEAD` fails, this is a fresh repo — use `git diff --cached` + `git diff` (both cached and unstaged) instead of `git diff HEAD`.
-- If the Codex background process exits with an error (no `turn.completed` in output), read the stderr file (`tail -20 /tmp/codex-review-XXXXXXXXXX.err`) and report the error content to the user.
-- If Codex stalls (no new output for ~3 minutes / 3 consecutive polls), ask the user whether to wait or abort (see Stall Detection in Progress Monitoring Strategy).
+
+- If `git status --porcelain` shows no changes, inform the user and stop.
+- If `git rev-parse --verify HEAD` fails, use `git diff --cached` + `git diff` instead of `git diff HEAD`.
+- If the runner exits with code `2` (timeout), inform the user and ask if they want to retry.
+- If the runner exits with code `3` (turn failed), report the error from stderr.
+- If the runner exits with code `4` (stalled), ask the user whether to retry or abort.
+- If the runner exits with code `5` (codex not found), tell the user to install the Codex CLI.
 - If the diff is too large for a single prompt, suggest splitting by file or directory.
 - If the debate stalls on a point, present both positions to the user and let them decide.
-- If `TaskOutput` or `TaskStop` returns an error when cleaning up a background task (e.g., task already exited), this is safe to ignore — the task is already gone.
-- If `TaskOutput(block:true, timeout=10000)` times out while acknowledging a terminal event, proceed with extraction/reporting anyway and run full cleanup. The task may not have fully settled — a background notification may still appear after ESC, but this is recoverable.
