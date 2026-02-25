@@ -32,9 +32,9 @@ Every Bash call that invokes the runner must include this resolve block at the t
 RUNNER="${CODEX_RUNNER:-$HOME/.local/bin/codex-runner.sh}"
 NEED_INSTALL=0
 if [ -n "$CODEX_RUNNER" ] && test -x "$CODEX_RUNNER"; then
-  if ! grep -q 'CODEX_RUNNER_VERSION="4"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
+  if ! grep -q 'CODEX_RUNNER_VERSION="5"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
 elif ! test -x "$RUNNER"; then NEED_INSTALL=1
-elif ! grep -q 'CODEX_RUNNER_VERSION="4"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
+elif ! grep -q 'CODEX_RUNNER_VERSION="5"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
 fi
 if [ "$NEED_INSTALL" = 1 ]; then
   mkdir -p "$HOME/.local/bin"
@@ -56,7 +56,7 @@ set -euo pipefail
 
 # IMPORTANT: Bump CODEX_RUNNER_VERSION when changing this script.
 # embed-runner.sh checks this version string across all embed locations.
-CODEX_RUNNER_VERSION="4"
+CODEX_RUNNER_VERSION="5"
 
 # --- Exit codes ---
 EXIT_SUCCESS=0
@@ -83,7 +83,7 @@ if [[ "${do_start:-}" == 1 ]]; then
   WORKING_DIR=""
   EFFORT="high"
   THREAD_ID=""
-  TIMEOUT=540
+  TIMEOUT=3600
 
   # --- Parse arguments ---
   while [[ $# -gt 0 ]]; do
@@ -296,7 +296,7 @@ with open(sys.argv[1]) as f:
 print(s.get('pid', ''))
 print(s.get('pgid', ''))
 print(s.get('watchdog_pid', ''))
-print(s.get('timeout', 540))
+print(s.get('timeout', 3600))
 print(s.get('started_at', int(time.time())))
 print(s.get('last_line_count', 0))
 print(s.get('stall_count', 0))
@@ -662,7 +662,7 @@ if [[ "${do_legacy:-}" == 1 ]]; then
   WORKING_DIR=""
   EFFORT="high"
   THREAD_ID=""
-  TIMEOUT=540
+  TIMEOUT=3600
   POLL_INTERVAL=15
 
   # --- Parse arguments ---
@@ -904,7 +904,7 @@ Progress events are written to stderr in format `[Xs] message` — these are vis
 ### Exit Codes (legacy mode)
 - `0` = success
 - `1` = general error
-- `2` = timeout (540s default)
+- `2` = timeout (3600s default)
 - `3` = codex turn failed
 - `4` = codex stalled (~3 min no output)
 - `5` = codex not found in PATH
@@ -913,7 +913,7 @@ Progress events are written to stderr in format `[Xs] message` — these are vis
 - `running` — Codex still working; stderr shows progress events
 - `completed` — Codex finished; `THREAD_ID:<id>` on stdout, review in `<STATE_DIR>/review.txt`
 - `failed` — Codex turn failed or process exited unexpectedly
-- `timeout` — Exceeded timeout (default 540s)
+- `timeout` — Exceeded timeout (default 3600s)
 - `stalled` — No new output for ~3 minutes
 
 ## Step 1: Gather Configuration
@@ -964,9 +964,9 @@ Run the codex-runner `start` subcommand with the bootstrap block:
 RUNNER="${CODEX_RUNNER:-$HOME/.local/bin/codex-runner.sh}"
 NEED_INSTALL=0
 if [ -n "$CODEX_RUNNER" ] && test -x "$CODEX_RUNNER"; then
-  if ! grep -q 'CODEX_RUNNER_VERSION="4"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
+  if ! grep -q 'CODEX_RUNNER_VERSION="5"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
 elif ! test -x "$RUNNER"; then NEED_INSTALL=1
-elif ! grep -q 'CODEX_RUNNER_VERSION="4"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
+elif ! grep -q 'CODEX_RUNNER_VERSION="5"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
 fi
 if [ "$NEED_INSTALL" = 1 ]; then
   mkdir -p "$HOME/.local/bin"
@@ -1099,9 +1099,9 @@ Run the runner with `--thread-id` to resume the existing Codex conversation:
 RUNNER="${CODEX_RUNNER:-$HOME/.local/bin/codex-runner.sh}"
 NEED_INSTALL=0
 if [ -n "$CODEX_RUNNER" ] && test -x "$CODEX_RUNNER"; then
-  if ! grep -q 'CODEX_RUNNER_VERSION="4"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
+  if ! grep -q 'CODEX_RUNNER_VERSION="5"' "$CODEX_RUNNER" 2>/dev/null; then NEED_INSTALL=1; fi
 elif ! test -x "$RUNNER"; then NEED_INSTALL=1
-elif ! grep -q 'CODEX_RUNNER_VERSION="4"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
+elif ! grep -q 'CODEX_RUNNER_VERSION="5"' "$RUNNER" 2>/dev/null; then NEED_INSTALL=1
 fi
 if [ "$NEED_INSTALL" = 1 ]; then
   mkdir -p "$HOME/.local/bin"

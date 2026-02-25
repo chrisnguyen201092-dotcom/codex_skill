@@ -3,7 +3,7 @@ set -euo pipefail
 
 # IMPORTANT: Bump CODEX_RUNNER_VERSION when changing this script.
 # embed-runner.sh checks this version string across all embed locations.
-CODEX_RUNNER_VERSION="4"
+CODEX_RUNNER_VERSION="5"
 
 # --- Exit codes ---
 EXIT_SUCCESS=0
@@ -30,7 +30,7 @@ if [[ "${do_start:-}" == 1 ]]; then
   WORKING_DIR=""
   EFFORT="high"
   THREAD_ID=""
-  TIMEOUT=540
+  TIMEOUT=3600
 
   # --- Parse arguments ---
   while [[ $# -gt 0 ]]; do
@@ -243,7 +243,7 @@ with open(sys.argv[1]) as f:
 print(s.get('pid', ''))
 print(s.get('pgid', ''))
 print(s.get('watchdog_pid', ''))
-print(s.get('timeout', 540))
+print(s.get('timeout', 3600))
 print(s.get('started_at', int(time.time())))
 print(s.get('last_line_count', 0))
 print(s.get('stall_count', 0))
@@ -609,7 +609,7 @@ if [[ "${do_legacy:-}" == 1 ]]; then
   WORKING_DIR=""
   EFFORT="high"
   THREAD_ID=""
-  TIMEOUT=540
+  TIMEOUT=3600
   POLL_INTERVAL=15
 
   # --- Parse arguments ---

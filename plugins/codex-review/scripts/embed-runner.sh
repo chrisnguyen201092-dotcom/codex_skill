@@ -63,8 +63,14 @@ with open(sys.argv[1]) as f:
 version = sys.argv[2]
 escaped = version.replace('\"', '\\\\\"')
 # Iterate all hooks to find version string in any command
+# hooks can be an object keyed by event name (new format) or an array (old format)
 found = False
-for hook_group in data.get('hooks', []):
+hooks_val = data.get('hooks', {})
+if isinstance(hooks_val, dict):
+    hook_groups = [g for groups in hooks_val.values() for g in groups]
+else:
+    hook_groups = hooks_val
+for hook_group in hook_groups:
     for hook in hook_group.get('hooks', []):
         cmd = hook.get('command', '')
         if version in cmd or escaped in cmd:

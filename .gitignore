@@ -1,5 +1,8 @@
 # Claude Code local settings (per-machine, should not be shared)
 .claude/settings.local.json
 
+# Codex review runtime artifacts
+.codex-review/
+
 # macOS
 .DS_Store
