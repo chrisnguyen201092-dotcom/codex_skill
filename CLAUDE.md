@@ -1,85 +1,78 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This repository now ships an npm CLI (`codex-skill`) that installs the `codex-review` skill pack into Claude skill directories.
 
 ## Project Overview
 
-Claude Code plugin (`codex-review`) that uses OpenAI Codex CLI as an adversarial reviewer and peer thinker. Three skills orchestrate multi-round debates between Claude Code and Codex until consensus:
+`codex-review` provides three skills powered by OpenAI Codex CLI:
+- `/codex-plan-review` — debate plans before implementation
+- `/codex-impl-review` — review uncommitted changes before commit
+- `/codex-think-about` — peer reasoning/debate on technical topics
 
-- `/codex-plan-review` — reviews implementation plans before coding
-- `/codex-impl-review` — reviews uncommitted code changes before committing
-- `/codex-think-about` — peer debate on any question (both AIs think independently, discuss, reach consensus or present disagreements)
+## Distribution Model
+
+- Global scope install: `~/.claude/skills/codex-review`
+- Project scope install: `<project>/.claude/skills/codex-review`
+- Installed by `codex-skill init -g` or `codex-skill init`
+
+No Claude plugin marketplace/hook packaging is used anymore.
 
 ## Requirements
 
+- Node.js >= 20
 - Claude Code CLI
-- OpenAI Codex CLI installed and in PATH (`codex` command)
+- OpenAI Codex CLI in PATH (`codex`)
 - OpenAI API key configured for Codex
 
 ## Development Commands
 
-**Check embedding consistency** (verifies codex-runner.sh version matches across all embedded locations):
 ```bash
-./plugins/codex-review/scripts/embed-runner.sh --check
+npm run check
+node ./bin/codex-skill.js --help
+node ./bin/codex-skill.js doctor
 ```
-
-There is no build system, test suite, or linter. The project is pure Bash + Markdown + JSON.
 
 ## Architecture
 
-### Plugin Layout
+### CLI Layout
 
+```text
+bin/codex-skill.js
+src/cli/
+src/commands/
+src/lib/
 ```
-plugins/codex-review/
-├── .claude-plugin/plugin.json    # Plugin metadata (name, version, author)
-├── hooks/hooks.json              # SessionStart hook — installs codex-runner.sh to ~/.local/bin/
-├── scripts/
-│   ├── codex-runner.sh           # Source of truth for the runner script
-│   └── embed-runner.sh           # Checks version consistency across embeddings
+
+### Skill Pack Layout
+
+```text
+skill-packs/codex-review/
+├── manifest.json
 └── skills/
-    ├── codex-plan-review/SKILL.md
-    ├── codex-impl-review/SKILL.md
-    └── codex-think-about/SKILL.md
+    ├── codex-plan-review/
+    │   ├── SKILL.md
+    │   ├── references/
+    │   └── scripts/
+    ├── codex-impl-review/
+    │   ├── SKILL.md
+    │   ├── references/
+    │   └── scripts/
+    └── codex-think-about/
+        ├── SKILL.md
+        ├── references/
+        └── scripts/
 ```
 
-### Core Execution Flow
+## Design Principles
 
-1. **SessionStart hook** installs `codex-runner.sh` to `~/.local/bin/` (version-checked, skips if current)
-2. **Skill invocation** (`/codex-plan-review`, `/codex-impl-review`, or `/codex-think-about`) follows SKILL.md step-by-step
-3. **codex-runner.sh** spawns `codex exec --json --sandbox read-only` in background, polls JSONL output every 15s
-4. **Review debate loop** (plan-review, impl-review): Claude Code parses Codex's `ISSUE-{N}` review → fixes/rebuts → resumes via `--thread-id` → repeats until `APPROVE` verdict or stalemate
-5. **Peer debate loop** (think-about): Claude Code and Codex think independently → discuss → exchange perspectives → repeat until consensus or stalemate → present to user
-
-### Key Design Decisions
-
-- **Prompt minimalism**: Prompts contain only file paths and context; Codex reads files/diffs itself
-- **Structured output**: Review skills (plan-review, impl-review) use `ISSUE-{N}` format with `VERDICT` block; think-about uses a thinking-session format (Key Insights / Considerations / Recommendations)
-- **Thread persistence**: First call creates a thread; subsequent rounds use `codex exec resume <thread_id>`
-- **Stalemate detection**: Stops if same points repeat for 2 consecutive rounds with no progress
-- **Peer equality** (think-about): Both AIs are equal thinkers — neither is reviewer nor implementer; both contribute ideas and counterarguments
-
-### Script Embedding Pattern
-
-`codex-runner.sh` is embedded in four places:
-- `hooks/hooks.json` (for SessionStart installation)
-- `skills/codex-plan-review/SKILL.md`
-- `skills/codex-impl-review/SKILL.md`
-- `skills/codex-think-about/SKILL.md`
-
-When updating the runner script, run `embed-runner.sh --check` to detect version drift. Drift must be fixed manually — the checker only reports, it does not auto-update.
-
-### codex-runner.sh Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 2 | Timeout (default 3600s) |
-| 3 | Turn failed |
-| 4 | Stalled (no output for ~3 minutes) |
-| 5 | Codex CLI not found in PATH |
+- Progressive disclosure: keep `SKILL.md` lean.
+- Move long prompts/protocol details into `references/`.
+- Keep deterministic logic in `scripts/`.
+- Keep each skill self-contained; each skill owns its runner scripts.
 
 ## Verification
 
-No automated tests. To verify changes:
-1. Run `./plugins/codex-review/scripts/embed-runner.sh --check` to confirm no version drift
-2. Start a Claude Code session and invoke `/codex-plan-review`, `/codex-impl-review`, or `/codex-think-about` to test end-to-end
+1. Run `node ./bin/codex-skill.js --help`
+2. Run `node ./bin/codex-skill.js init --dry-run`
+3. Run `node ./bin/codex-skill.js doctor`
+4. Install skill pack and invoke skills inside Claude Code

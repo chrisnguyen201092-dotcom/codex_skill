@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # IMPORTANT: Bump CODEX_RUNNER_VERSION when changing this script.
-# embed-runner.sh checks this version string across all embed locations.
+# This script is shared by all codex-review skills in the skill pack.
 CODEX_RUNNER_VERSION="6"
 
 # --- Exit codes ---
