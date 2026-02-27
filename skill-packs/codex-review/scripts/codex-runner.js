@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 
 // --- Constants ---
-const CODEX_RUNNER_VERSION = 8;
+const CODEX_RUNNER_VERSION = 9;
 
 const EXIT_SUCCESS = 0;
 const EXIT_ERROR = 1;
@@ -509,14 +509,6 @@ function cmdStart(argv) {
 
     // Launch watchdog
     watchdogPid = launchWatchdog(timeout, codexPgid);
-
-    // Verify process is alive (wait 1 second — cross-platform)
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
-    if (!isAlive(codexPid)) {
-      process.stderr.write("Error: Codex process died immediately after launch\n");
-      startupCleanup();
-      return EXIT_ERROR;
-    }
 
     // Write state.json atomically
     const now = Math.floor(Date.now() / 1000);
