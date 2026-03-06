@@ -4,12 +4,13 @@ This repository provides a single-command installer (`npx github:lploc94/codex_s
 
 ## Project Overview
 
-`codex-review` provides five skills powered by OpenAI Codex CLI:
+`codex-review` provides six skills powered by OpenAI Codex CLI:
 - `/codex-plan-review` — debate plans before implementation
 - `/codex-impl-review` — review uncommitted or branch changes before commit/merge
 - `/codex-think-about` — peer reasoning/debate on technical topics
 - `/codex-commit-review` — review commit messages for clarity and conventions
 - `/codex-pr-review` — review PRs (branch diff, commit hygiene, description)
+- `/codex-parallel-review` — parallel independent review by both Claude and Codex, then debate
 
 ## Distribution Model
 
@@ -66,7 +67,10 @@ skill-packs/codex-review/
     ├── codex-commit-review/
     │   ├── SKILL.md
     │   └── references/
-    └── codex-pr-review/
+    ├── codex-pr-review/
+    │   ├── SKILL.md
+    │   └── references/
+    └── codex-parallel-review/
         ├── SKILL.md
         └── references/
 ```
@@ -90,18 +94,22 @@ skill-packs/codex-review/
 ├── codex-commit-review/
 │   ├── SKILL.md
 │   └── references/
-└── codex-pr-review/
+├── codex-pr-review/
+│   ├── SKILL.md
+│   └── references/
+└── codex-parallel-review/
     ├── SKILL.md
     └── references/
 ```
 
 ### Core Execution Flow
 
-1. **Skill invocation** (`/codex-plan-review`, `/codex-impl-review`, `/codex-think-about`, `/codex-commit-review`, or `/codex-pr-review`) follows SKILL.md step-by-step
+1. **Skill invocation** (`/codex-plan-review`, `/codex-impl-review`, `/codex-think-about`, `/codex-commit-review`, `/codex-pr-review`, or `/codex-parallel-review`) follows SKILL.md step-by-step
 2. **Runner path**: SKILL.md contains hardcoded absolute path to `codex-runner.js`
 3. **codex-runner.js** spawns `codex exec --json --sandbox read-only` as a detached process, polls JSONL output
 4. **Review debate loop** (plan-review, impl-review, commit-review, pr-review): Claude Code parses Codex's `ISSUE-{N}` review → fixes/rebuts → resumes via `--thread-id` → repeats until `APPROVE` verdict or stalemate
 5. **Peer debate loop** (think-about): Claude Code and Codex think independently → discuss → exchange perspectives → repeat until consensus or stalemate → present to user
+6. **Parallel review loop** (parallel-review): Claude and Codex review independently in parallel → merge findings → debate disagreements → produce consensus report
 
 ### Key Design Decisions
 
@@ -137,4 +145,4 @@ skill-packs/codex-review/
 2. `node skill-packs/codex-review/scripts/codex-runner.js version` — in version `8`
 3. `ls ~/.claude/skills/codex-review/` — chứa `scripts/`
 4. SKILL.md chứa absolute path, không search loop
-5. Invoke `/codex-plan-review`, `/codex-impl-review`, `/codex-think-about`, `/codex-commit-review`, `/codex-pr-review` trong Claude Code
+5. Invoke `/codex-plan-review`, `/codex-impl-review`, `/codex-think-about`, `/codex-commit-review`, `/codex-pr-review`, `/codex-parallel-review` trong Claude Code

@@ -26,9 +26,9 @@ const skillsRoot = path.join(os.homedir(), '.claude', 'skills');
 const runnerDir = path.join(skillsRoot, 'codex-review');
 const runnerPath = path.join(runnerDir, 'scripts', 'codex-runner.js');
 
-const SKILLS = ['codex-plan-review', 'codex-impl-review', 'codex-think-about', 'codex-commit-review', 'codex-pr-review'];
+const SKILLS = ['codex-plan-review', 'codex-impl-review', 'codex-think-about', 'codex-commit-review', 'codex-pr-review', 'codex-parallel-review'];
 
-// All directories managed by this installer (runner + 5 skills)
+// All directories managed by this installer (runner + 6 skills)
 const MANAGED_DIRS = ['codex-review', ...SKILLS];
 
 // ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ try {
   console.log('');
   console.log('codex-review skills installed successfully!');
   console.log(`  Runner:  ${runnerDir}`);
-  console.log(`  Skills:  ${skillsRoot}/codex-{plan-review,impl-review,think-about,commit-review,pr-review}`);
+  console.log(`  Skills:  ${skillsRoot}/codex-{plan-review,impl-review,think-about,commit-review,pr-review,parallel-review}`);
   console.log('');
   console.log('Skills available in Claude Code:');
   console.log('  /codex-plan-review    — debate plans before implementation');
@@ -174,6 +174,7 @@ try {
   console.log('  /codex-think-about    — peer reasoning/debate');
   console.log('  /codex-commit-review  — review commit messages');
   console.log('  /codex-pr-review      — review PRs (branch diff + description)');
+  console.log('  /codex-parallel-review — parallel dual-reviewer analysis + debate');
 } catch (err) {
   // Cleanup staging on any error
   if (fs.existsSync(stagingDir)) {
