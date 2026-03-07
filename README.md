@@ -2,13 +2,14 @@
 
 Single-command installer for the **codex-review** skill pack for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
-Six skills powered by [OpenAI Codex CLI](https://github.com/openai/codex):
+Seven skills powered by [OpenAI Codex CLI](https://github.com/openai/codex):
 - `/codex-plan-review` — debate implementation plans before coding
 - `/codex-impl-review` — review uncommitted or branch changes before commit/merge
 - `/codex-think-about` — peer reasoning/debate on technical topics
 - `/codex-commit-review` — review commit messages for clarity and conventions
 - `/codex-pr-review` — review PRs (branch diff, commit hygiene, description)
 - `/codex-parallel-review` — parallel independent review by both Claude and Codex, then debate
+- `/codex-codebase-review` — chunked full-codebase review for large projects (50-500+ files)
 
 ## Requirements
 
@@ -24,7 +25,7 @@ npx github:lploc94/codex_skill
 ```
 
 ### What it does
-1. Installs 6 skills directly into `~/.claude/skills/` (one directory per skill)
+1. Installs 7 skills directly into `~/.claude/skills/` (one directory per skill)
 2. Copies the shared `codex-runner.js` to `~/.claude/skills/codex-review/scripts/`
 3. Injects the absolute runner path into each SKILL.md template
 4. Validates templates and references before finalizing
@@ -49,6 +50,7 @@ After install, start Claude Code and run:
 - `/codex-commit-review` to review commit messages.
 - `/codex-pr-review` to review PRs (branch diff + description).
 - `/codex-parallel-review` for parallel dual-reviewer analysis + debate.
+- `/codex-codebase-review` for chunked full-codebase review (50-500+ files).
 
 ## License
 
