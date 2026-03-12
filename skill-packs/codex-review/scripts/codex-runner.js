@@ -1505,8 +1505,18 @@ function cmdPoll(argv) {
     process.stdout.write(cached);
     if (!cached.endsWith("\n")) process.stdout.write("\n");
     const reviewFile = path.join(stateDir, "review.md");
+    const legacyReviewFile = path.join(stateDir, "review.txt");
     if (fs.existsSync(reviewFile)) {
       process.stderr.write(`[cached] Review available in ${stateDir}/review.md\n`);
+    } else if (fs.existsSync(legacyReviewFile)) {
+      // Migrate legacy v9 review.txt → review.md for automation compatibility
+      try {
+        const legacyContent = fs.readFileSync(legacyReviewFile, "utf8");
+        atomicWrite(reviewFile, legacyContent);
+        process.stderr.write(`[cached] Migrated legacy review.txt → review.md in ${stateDir}\n`);
+      } catch {
+        process.stderr.write(`[cached] Review available in ${stateDir}/review.txt (legacy v9 state)\n`);
+      }
     }
     return EXIT_SUCCESS;
   }

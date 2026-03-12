@@ -123,7 +123,7 @@ function testFileSystemSimulation() {
     schema_version: '1.0.0',
     tool: {
       name: 'codex-review',
-      version: '9',
+      version: '10',
       skill: 'codex-impl-review',
       invocation: testMetadata
     },
@@ -206,7 +206,7 @@ function testFileSystemSimulation() {
       tool: {
         driver: {
           name: 'codex-review',
-          version: '9',
+          version: '10',
           informationUri: 'https://github.com/lploc94/codex_skill',
           rules: [
             {
