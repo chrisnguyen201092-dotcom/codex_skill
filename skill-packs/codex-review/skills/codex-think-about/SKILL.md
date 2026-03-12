@@ -6,7 +6,7 @@ description: Peer debate between Claude Code and Codex on any technical question
 # Codex Think About
 
 ## Purpose
-Use this skill for peer reasoning, not code review. Claude and Codex are equal thinkers.
+Use this skill for peer reasoning, not code review. Claude and Codex are equal analytical peers; Claude orchestrates the debate loop and final synthesis.
 
 ## Prerequisites
 - A clear question or decision topic from the user.
@@ -25,7 +25,7 @@ RUNNER="{{RUNNER_PATH}}"
 3. Start Codex thread with `node "$RUNNER" start --working-dir "$PWD" --effort "$EFFORT"`.
 4. Poll with adaptive intervals (Round 1: 60s/60s/30s/15s..., Round 2+: 30s/15s...). After each poll, report **specific activities** from poll output (e.g. which files Codex is reading, what topic it is analyzing). See `references/workflow.md` for parsing guide. NEVER report generic "Codex is running" — always extract concrete details.
 5. Claude responds with agree/disagree points and new perspectives.
-6. Resume via `--thread-id` and loop until consensus or stalemate.
+6. Resume via `--thread-id` and loop until consensus, stalemate, or hard cap (5 rounds).
 7. Present user-facing synthesis with agreements, disagreements, and confidence.
 
 ### Effort Level Guide
