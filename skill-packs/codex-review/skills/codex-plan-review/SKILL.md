@@ -1,6 +1,6 @@
 ---
 name: codex-plan-review
-description: Debate implementation plans between Claude Code and Codex CLI before coding. Use this skill after a plan file exists; Claude and Codex iterate until consensus or explicit stalemate.
+description: Review/debate plans before implementation between Claude Code and Codex CLI.
 ---
 
 # Codex Plan Review
