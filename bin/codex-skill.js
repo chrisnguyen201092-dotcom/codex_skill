@@ -26,10 +26,16 @@ const skillsRoot = path.join(os.homedir(), '.claude', 'skills');
 const runnerDir = path.join(skillsRoot, 'codex-review');
 const runnerPath = path.join(runnerDir, 'scripts', 'codex-runner.js');
 
-const SKILLS = ['codex-plan-review', 'codex-impl-review', 'codex-think-about', 'codex-commit-review', 'codex-pr-review', 'codex-parallel-review', 'codex-codebase-review', 'codex-security-review'];
+const CORE_SKILLS = ['codex-plan-review', 'codex-impl-review', 'codex-think-about', 'codex-commit-review', 'codex-pr-review'];
+const FULL_SKILLS = ['codex-parallel-review', 'codex-codebase-review', 'codex-security-review'];
 
-// All directories managed by this installer (runner + 8 skills)
-const MANAGED_DIRS = ['codex-review', ...SKILLS];
+const fullMode = process.argv.includes('-full');
+const SKILLS = fullMode ? [...CORE_SKILLS, ...FULL_SKILLS] : CORE_SKILLS;
+
+// All directories managed by this installer (runner + skills)
+// INSTALL_DIRS: dirs in staging to swap in. CLEANUP_DIRS: old full-only dirs to remove in default mode.
+const INSTALL_DIRS = ['codex-review', ...SKILLS];
+const CLEANUP_DIRS = fullMode ? [] : FULL_SKILLS;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,7 +123,7 @@ try {
   const backups = [];    // dirs that had a previous install → backed up
   const swapped = [];    // dirs successfully moved from staging → target
   try {
-    for (const dir of MANAGED_DIRS) {
+    for (const dir of INSTALL_DIRS) {
       const target = path.join(skillsRoot, dir);
       const staged = path.join(stagingDir, dir);
       if (fs.existsSync(target)) {
@@ -156,6 +162,17 @@ try {
       console.warn(`Warning: could not remove backup at ${backup}`);
     }
   }
+  // In default mode, remove previously-installed full-only skills
+  for (const dir of CLEANUP_DIRS) {
+    const target = path.join(skillsRoot, dir);
+    if (fs.existsSync(target)) {
+      try {
+        fs.rmSync(target, { recursive: true, force: true });
+      } catch {
+        console.warn(`Warning: could not remove old full-only skill at ${target}`);
+      }
+    }
+  }
   try {
     fs.rmSync(stagingDir, { recursive: true, force: true });
   } catch {
@@ -164,9 +181,9 @@ try {
 
   // 5. Success message
   console.log('');
-  console.log('codex-review skills installed successfully!');
+  console.log(`codex-review skills installed successfully!${fullMode ? ' (full mode)' : ''}`);
   console.log(`  Runner:  ${runnerDir}`);
-  console.log(`  Skills:  ${skillsRoot}/codex-{plan-review,impl-review,think-about,commit-review,pr-review,parallel-review,codebase-review,security-review}`);
+  console.log(`  Skills:  ${SKILLS.map(s => s.replace('codex-', '')).join(', ')}`);
   console.log('');
   console.log('Skills available in Claude Code:');
   console.log('  /codex-plan-review     — debate plans before implementation');
@@ -174,9 +191,19 @@ try {
   console.log('  /codex-think-about     — peer reasoning/debate');
   console.log('  /codex-commit-review   — review commit messages');
   console.log('  /codex-pr-review       — review PRs (branch diff + description)');
-  console.log('  /codex-parallel-review — parallel dual-reviewer analysis + debate');
-  console.log('  /codex-codebase-review — chunked full-codebase review (50-500+ files)');
-  console.log('  /codex-security-review — security-focused review (OWASP Top 10 + CWE)');
+  if (fullMode) {
+    console.log('  /codex-parallel-review — parallel dual-reviewer analysis + debate');
+    console.log('  /codex-codebase-review — chunked full-codebase review (50-500+ files)');
+    console.log('  /codex-security-review — security-focused review (OWASP Top 10 + CWE)');
+  } else {
+    console.log('');
+    console.log('Additional skills available with -full flag:');
+    console.log('  /codex-parallel-review — parallel dual-reviewer analysis + debate');
+    console.log('  /codex-codebase-review — chunked full-codebase review (50-500+ files)');
+    console.log('  /codex-security-review — security-focused review (OWASP Top 10 + CWE)');
+    console.log('');
+    console.log('Run: npx github:lploc94/codex_skill -full');
+  }
 } catch (err) {
   // Cleanup staging on any error
   if (fs.existsSync(stagingDir)) {
