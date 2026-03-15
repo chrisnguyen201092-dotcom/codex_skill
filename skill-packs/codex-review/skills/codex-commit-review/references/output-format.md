@@ -10,11 +10,15 @@ Use this exact shape:
 - Problem: {clear statement}
 - Evidence: {specific text or diff reference}
 - Why it matters: {impact on readability, traceability, or team workflow}
-- Suggested fix: {concrete message edit}
+
+### Overall Assessment
+- Quality: poor | fair | good | excellent
+- Convention compliance: yes | partial | no
+- Accuracy vs diff: accurate | partially accurate | inaccurate
 
 ### VERDICT
-- Status: APPROVE | REVISE
+- Status: CONSENSUS | CONTINUE | STALEMATE
 - Reason: {short reason}
 ```
 
-If no issues remain, return only `VERDICT` with `Status: APPROVE`.
+If no issues remain, return only `Overall Assessment` and `VERDICT` with `Status: CONSENSUS`.

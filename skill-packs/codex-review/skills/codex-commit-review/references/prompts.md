@@ -5,11 +5,12 @@
 | Placeholder | Source | Required | Default |
 |-------------|--------|----------|---------|
 | `{COMMIT_MESSAGES}` | Commit message text (draft: user text; last: git log output) | Yes | — |
-| `{DIFF_CONTEXT}` | Diff command for Codex (draft: `git diff --cached`; last: `git diff HEAD~N..HEAD`) | Yes | — |
+| `{DIFF_CONTEXT}` | Diff command (draft: `git diff --cached`; last: `git diff HEAD~N..HEAD`) | Yes | — |
 | `{USER_REQUEST}` | User's task/request description | No | "Review commit message(s) for quality and accuracy" |
 | `{SESSION_CONTEXT}` | Structured context block (see schema below) | No | "Not specified" |
 | `{PROJECT_CONVENTIONS}` | Discovered conventions from §1.6 | No | "None discovered — use Git general guidelines" |
 | `{OUTPUT_FORMAT}` | Copy entire fenced code block from `references/output-format.md` | Yes | — |
+| `{CLAUDE_ANALYSIS_FORMAT}` | Copy entire fenced code block from `references/claude-analysis-template.md` | Yes (Claude analysis only) | — |
 
 ### Last-mode additional placeholders
 
@@ -21,9 +22,10 @@
 
 | Placeholder | Source | Required | Default |
 |-------------|--------|----------|---------|
-| `{FIXED_ITEMS}` | Accepted issues and how they were fixed | Yes | — |
-| `{DISPUTED_ITEMS}` | Rebuttals for rejected issues | Yes | — |
-| `{REVISED_MESSAGE}` | Proposed revised message text (per-commit for last N > 1) | Yes | — |
+| `{AGREED_POINTS}` | Findings both Claude and Codex agree on (merged descriptions) | Yes | — |
+| `{DISAGREED_POINTS}` | Findings where Claude and Codex disagree (both positions) | Yes | — |
+| `{NEW_FINDINGS}` | Claude-only or Codex-only findings not yet discussed | Yes | — |
+| `{CONTINUE_OR_CONSENSUS_OR_STALEMATE}` | Current debate status with reasoning | Yes | — |
 
 ### SESSION_CONTEXT Schema
 
@@ -43,7 +45,7 @@ Project conventions: {PROJECT_CONVENTIONS}
 ## Draft Review Prompt (Round 1)
 ```
 ## Your Role
-You are Codex acting as a strict commit message reviewer.
+You are Codex acting as an equal peer reviewer of commit messages. Another reviewer (Claude) is independently analyzing the same commits — you will debate afterward.
 
 ## Task
 {USER_REQUEST}
@@ -65,7 +67,8 @@ Run `{DIFF_CONTEXT}` to read the staged diff. Verify the message accurately desc
 2. Read the staged diff to verify message accuracy and scope.
 3. Check: clarity, convention compliance, scope accuracy, structure.
 4. Verify message claims match the actual diff.
-5. Use EXACT output format below. Every issue must have a concrete suggested fix.
+5. Focus on identifying problems and their impact — do NOT suggest fixes.
+6. Use EXACT output format below.
 
 ## Required Output Format
 {OUTPUT_FORMAT}
@@ -74,7 +77,7 @@ Run `{DIFF_CONTEXT}` to read the staged diff. Verify the message accurately desc
 ## Last Review Prompt (Round 1)
 ```
 ## Your Role
-You are Codex acting as a strict commit message reviewer.
+You are Codex acting as an equal peer reviewer of commit messages. Another reviewer (Claude) is independently analyzing the same commits — you will debate afterward.
 
 ## Task
 {USER_REQUEST}
@@ -102,13 +105,80 @@ You are Codex acting as a strict commit message reviewer.
 3. Check: clarity, convention compliance, scope accuracy, structure.
 4. Verify each message's claims match its actual diff.
 5. In Evidence field, always reference the specific commit SHA and subject.
-6. Use EXACT output format below. Every issue must have a concrete suggested fix.
+6. Focus on identifying problems and their impact — do NOT suggest fixes.
+7. Use EXACT output format below.
 
 ## Required Output Format
 {OUTPUT_FORMAT}
 ```
 
-## Rebuttal Prompt — Draft mode (Round 2+)
+## Claude Independent Analysis Prompt — Draft mode
+```
+## Your Task
+You are reviewing commit message(s) independently. Codex is reviewing the same commits separately — you will NOT see their findings until later.
+
+## INFORMATION BARRIER
+- Do NOT read $STATE_DIR/review.md or any Codex output.
+- Form your OWN conclusions based on the diff and message text.
+- Commit to specific positions.
+
+## Commit Message to Review
+{COMMIT_MESSAGES}
+
+## How to Inspect Changes
+Run `{DIFF_CONTEXT}` to read the staged diff. Verify the message accurately describes the changes.
+
+## Project Conventions
+{PROJECT_CONVENTIONS}
+
+## Instructions
+1. Focus on message quality only — do NOT review code correctness.
+2. Read the diff to verify message accuracy and scope.
+3. Check: clarity, convention compliance, scope accuracy, structure.
+4. Identify problems — do NOT suggest fixes.
+5. Write in the required format below.
+
+## Required Output Format
+{CLAUDE_ANALYSIS_FORMAT}
+```
+
+## Claude Independent Analysis Prompt — Last mode
+```
+## Your Task
+You are reviewing commit message(s) independently. Codex is reviewing the same commits separately — you will NOT see their findings until later.
+
+## INFORMATION BARRIER
+- Do NOT read $STATE_DIR/review.md or any Codex output.
+- Form your OWN conclusions based on the diff and message text.
+- Commit to specific positions.
+
+## Commits to Review
+{COMMIT_LIST}
+
+## Commit Messages
+{COMMIT_MESSAGES}
+
+## How to Inspect Changes
+- For each commit, run `git show <SHA>` to see its individual diff.
+- Also run `{DIFF_CONTEXT}` for aggregate diff context.
+- Verify each message accurately describes its commit's changes.
+
+## Project Conventions
+{PROJECT_CONVENTIONS}
+
+## Instructions
+1. Focus on message quality only — do NOT review code correctness.
+2. Inspect EACH commit's diff individually — do not rely on aggregate diff alone.
+3. Check: clarity, convention compliance, scope accuracy, structure.
+4. In Evidence field, always reference the specific commit SHA and subject.
+5. Identify problems — do NOT suggest fixes.
+6. Write in the required format below.
+
+## Required Output Format
+{CLAUDE_ANALYSIS_FORMAT}
+```
+
+## Response Prompt — Draft mode (Round 2+)
 ```
 ## Session Context
 {SESSION_CONTEXT}
@@ -116,19 +186,22 @@ You are Codex acting as a strict commit message reviewer.
 ## Project Conventions
 {PROJECT_CONVENTIONS}
 
-## Issues Fixed
-{FIXED_ITEMS}
+## Points We Agree On
+{AGREED_POINTS}
 
-## Issues Disputed
-{DISPUTED_ITEMS}
+## Points We Disagree On
+{DISAGREED_POINTS}
 
-## Revised Message
-{REVISED_MESSAGE}
+## New Findings
+{NEW_FINDINGS}
+
+## Current Status
+{CONTINUE_OR_CONSENSUS_OR_STALEMATE}
 
 ## Instructions
 1. Re-read the staged diff: run `{DIFF_CONTEXT}`.
-2. Re-review the revised message against the diff.
-3. Verify fixed issues are actually resolved — do not re-open unless regression found.
+2. Address disagreements with evidence from the diff.
+3. Do NOT suggest fixes — focus on whether the problem exists.
 4. Keep ISSUE-{N} numbering stable. New findings use the next available number.
 5. Use EXACT output format. You MUST include a VERDICT block.
 
@@ -136,7 +209,7 @@ You are Codex acting as a strict commit message reviewer.
 {OUTPUT_FORMAT}
 ```
 
-## Rebuttal Prompt — Last mode (Round 2+)
+## Response Prompt — Last mode (Round 2+)
 ```
 ## Session Context
 {SESSION_CONTEXT}
@@ -147,20 +220,23 @@ You are Codex acting as a strict commit message reviewer.
 ## Commits in Scope
 {COMMIT_LIST}
 
-## Issues Fixed
-{FIXED_ITEMS}
+## Points We Agree On
+{AGREED_POINTS}
 
-## Issues Disputed
-{DISPUTED_ITEMS}
+## Points We Disagree On
+{DISAGREED_POINTS}
 
-## Revised Messages
-{REVISED_MESSAGE}
+## New Findings
+{NEW_FINDINGS}
+
+## Current Status
+{CONTINUE_OR_CONSENSUS_OR_STALEMATE}
 
 ## Instructions
-1. Re-read each commit's diff: run `git show <SHA>` for each commit in the review.
-2. Re-review revised messages against their respective diffs.
+1. Re-read each commit's diff: run `git show <SHA>` for each commit in the review. Also run `{DIFF_CONTEXT}` for aggregate context.
+2. Address disagreements with evidence from the diff.
 3. In Evidence, always reference specific commit SHA and subject.
-4. Verify fixed issues are actually resolved — do not re-open unless regression found.
+4. Do NOT suggest fixes — focus on whether the problem exists.
 5. Keep ISSUE-{N} numbering stable. New findings use the next available number.
 6. Use EXACT output format. You MUST include a VERDICT block.
 
