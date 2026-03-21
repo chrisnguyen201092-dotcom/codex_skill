@@ -143,6 +143,31 @@ node "$RUNNER" stop "$STATE_DIR"
 ```
 Remove the state directory and kill any remaining Codex/watchdog processes. Always run this step, even if the review ended due to failure or timeout.
 
+## Session Output
+
+After the final round completes (or after Round 1 for single-round skills), create a persistent session directory:
+
+```bash
+SESSION_DIR=".codex-review/sessions/codex-impl-review-$(date +%s)-$$"
+mkdir -p "$SESSION_DIR"
+cp "$STATE_DIR/review.md" "$SESSION_DIR/review.md"
+cat > "$SESSION_DIR/meta.json" << 'METAEOF'
+{
+  "skill": "codex-impl-review",
+  "version": 14,
+  "effort": "$EFFORT",
+  "scope": "$SCOPE",
+  "rounds": $ROUND_COUNT,
+  "verdict": "$FINAL_VERDICT",
+  "timing": { "total_seconds": $ELAPSED_SECONDS },
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+METAEOF
+echo "Session saved to: $SESSION_DIR"
+```
+
+Report `$SESSION_DIR` path to the user in the final summary.
+
 ## Error Handling
 
 Runner `poll` returns status via output string `POLL:<status>:<elapsed>[:exit_code:details]`. Normally exits 0, but may exit non-zero on invalid state dir or I/O error — handle both:
