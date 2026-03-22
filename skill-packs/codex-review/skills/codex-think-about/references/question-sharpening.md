@@ -1,8 +1,8 @@
 # Question Sharpening
 
 Run this step before collecting effort level. Its output becomes `{QUESTION}`
-for all downstream prompt assembly (workflow.md step 2b onward, including
-Claude's independent analysis at step 2.5).
+for all downstream prompt assembly (SKILL.md step 3 onward, including
+Claude's independent analysis at step 4).
 
 Claude holds the confirmed sharpened question in context — no file write needed.
 

@@ -1707,14 +1707,7 @@ function cmdPoll(argv) {
   }
 
   if (result.terminal) {
-    // Cache final JSON and cleanup
-    const jsonStr = JSON.stringify(result.json);
-    atomicWrite(path.join(stateDir, "final.txt"), jsonStr);
-
-    verifyAndKillCodex(codexPid, codexPgid);
-    if (watchdogPid) verifyAndKillWatchdog(watchdogPid);
-
-    // Update rounds.json
+    // Update rounds.json FIRST (before caching) so convergence can be computed
     const rounds = readRounds(stateDir);
     if (rounds.length > 0) {
       const currentRoundObj = rounds[rounds.length - 1];
@@ -1723,7 +1716,7 @@ function cmdPoll(argv) {
         currentRoundObj.completed_at = now;
         currentRoundObj.elapsed_seconds = now - currentRoundObj.started_at;
 
-        // Extract verdict and issues_found from parsed review
+        // Extract verdict, issues_found, and issue_ids from parsed review
         if (result.json.review) {
           const review = result.json.review;
           if (review.verdict && review.verdict.status) {
@@ -1731,6 +1724,11 @@ function cmdPoll(argv) {
           }
           if (review.blocks) {
             currentRoundObj.issues_found = review.blocks.length;
+            // Store issue IDs for convergence detection
+            currentRoundObj.issue_ids = review.blocks
+              .filter(b => b.prefix === "ISSUE")
+              .map(b => b.id)
+              .sort((a, b) => a - b);
           }
           if (review.suggested_status) {
             currentRoundObj.verdict = review.suggested_status;
@@ -1738,8 +1736,54 @@ function cmdPoll(argv) {
         }
 
         writeRounds(stateDir, rounds);
+
+        // Convergence / stalemate detection
+        if (result.json.status === "completed" && rounds.length >= 2) {
+          const prevRound = rounds[rounds.length - 2];
+          if (prevRound.issue_ids && currentRoundObj.issue_ids) {
+            const prevIds = prevRound.issue_ids;
+            const currIds = currentRoundObj.issue_ids;
+
+            // Guard: skip stalemate detection when no ISSUE blocks tracked
+            // (e.g. think-about format, RESPONSE-only rounds in round 2+)
+            if (currIds.length === 0 && prevIds.length === 0) {
+              result.json.convergence = {
+                stalemate: false,
+                reason: "no_issue_blocks_tracked",
+              };
+            } else {
+              const prevSet = new Set(prevIds);
+              const currSet = new Set(currIds);
+              const newIssues = currIds.filter(id => !prevSet.has(id));
+              const resolvedIssues = prevIds.filter(id => !currSet.has(id));
+              const sameSet = prevIds.length === currIds.length
+                && prevIds.every(id => currSet.has(id));
+
+              if (sameSet && newIssues.length === 0) {
+                result.json.convergence = {
+                  stalemate: true,
+                  reason: `Same ${currIds.length} open issue(s) for 2 consecutive rounds, no new issues`,
+                  unchanged_issue_ids: currIds,
+                };
+              } else {
+                result.json.convergence = {
+                  stalemate: false,
+                  new_issues: newIssues,
+                  resolved_issues: resolvedIssues,
+                };
+              }
+            }
+          }
+        }
       }
     }
+
+    // Cache final JSON (after convergence is computed) and cleanup
+    const jsonStr = JSON.stringify(result.json);
+    atomicWrite(path.join(stateDir, "final.txt"), jsonStr);
+
+    verifyAndKillCodex(codexPid, codexPgid);
+    if (watchdogPid) verifyAndKillWatchdog(watchdogPid);
   }
 
   // Persist thread_id to state.json

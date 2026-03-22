@@ -6,7 +6,7 @@
 |-------------|--------|----------|---------|
 | `{PR_TITLE}` | PR title from user or `gh pr view --json title` | No | "Not provided" |
 | `{PR_DESCRIPTION}` | PR description from user or `gh pr view --json body` | No | "Not provided" |
-| `{BASE_BRANCH}` | Validated base branch (see workflow.md §1) | Yes | — |
+| `{BASE_BRANCH}` | Validated base branch (see SKILL.md §1) | Yes | — |
 | `{COMMIT_COUNT}` | Number of commits: `git rev-list --count {BASE_BRANCH}..HEAD` | Yes | — |
 | `{COMMIT_LIST}` | Formatted list: `<SHA> <subject>` per commit from `git log {BASE_BRANCH}..HEAD --oneline` | Yes | — |
 | `{USER_REQUEST}` | User's task/request description | No | "Review this PR for quality and merge readiness" |

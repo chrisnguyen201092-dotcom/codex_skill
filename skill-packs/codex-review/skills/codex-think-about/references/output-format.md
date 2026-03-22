@@ -2,7 +2,7 @@
 
 Use this exact shape:
 
-This schema is for each Codex round output. The final user-facing synthesis uses a different format (see workflow.md section 7).
+This schema is for each Codex round output. The final user-facing synthesis uses a different format (see SKILL.md §9).
 
 ```markdown
 ### Key Insights
