@@ -21,6 +21,7 @@ Ask user: `full-codebase` (default), `working-tree`, or `branch`.
   2. Validate ref: `git rev-parse --verify <base>` — fail-fast if not found.
   3. Fallback order: `main` → `master` → remote HEAD.
   4. Confirm with user if using fallback.
+  5. Bind variable: `BASE=<validated value>` — use this consistently in all subsequent steps.
 - **Clean working tree required**: if dirty, tell user to commit/stash or switch to working-tree mode.
 - Branch diff: `git diff <base>...HEAD`.
 
@@ -35,11 +36,7 @@ Based on mode:
 
 ### Compute SKILLS_DIR
 
-Compute `SKILLS_DIR` from the runner path — it is the grandparent directory of the runner script (e.g., `~/.claude/skills`):
-
-```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
-```
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 
 ## 2) Launch All 5 Reviewers Simultaneously
 
@@ -60,20 +57,33 @@ Render prompt (choose template by mode):
 
 For full-codebase mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"..."}' | \
-  node "$RUNNER" render --skill codex-parallel-review --template full-round1 --skills-dir "$SKILLS_DIR")
+REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-parallel-review --template full-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For working-tree mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"..."}' | \
-  node "$RUNNER" render --skill codex-parallel-review --template working-tree-round1 --skills-dir "$SKILLS_DIR")
+REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-parallel-review --template working-tree-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For branch mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","BASE_BRANCH":"main"}' | \
-  node "$RUNNER" render --skill codex-parallel-review --template branch-round1 --skills-dir "$SKILLS_DIR")
+REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_ESCAPED=$(printf '%s' "$BASE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-parallel-review --template branch-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"BASE_BRANCH":$BASE_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -81,7 +91,7 @@ PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","BASE_BRANCH":"main
 Start Codex:
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -268,8 +278,13 @@ For each round:
 
 1. Render debate prompt:
    ```bash
-   PROMPT=$(echo '{"CODEX_ONLY_WITH_REBUTTALS":"...","CLAUDE_ONLY_FINDINGS":"...","CONTRADICTIONS":"..."}' | \
-     node "$RUNNER" render --skill codex-parallel-review --template debate --skills-dir "$SKILLS_DIR")
+   CODEX_ESCAPED=$(printf '%s' "$CODEX_ONLY_WITH_REBUTTALS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   CLAUDE_ESCAPED=$(printf '%s' "$CLAUDE_ONLY_FINDINGS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   CONTRA_ESCAPED=$(printf '%s' "$CONTRADICTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   PROMPT=$(node "$RUNNER" render --skill codex-parallel-review --template debate --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"CODEX_ONLY_WITH_REBUTTALS":$CODEX_ESCAPED,"CLAUDE_ONLY_FINDINGS":$CLAUDE_ESCAPED,"CONTRADICTIONS":$CONTRA_ESCAPED}
+RENDER_EOF
+   )
    ```
    - Include codex-only findings Claude disagrees with + rebuttals.
    - Include claude-only findings for Codex to evaluate.
@@ -278,7 +293,7 @@ For each round:
 
 2. Resume Codex thread:
    ```bash
-   echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+   printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
    ```
 
    **Validate resume output (JSON):**
@@ -343,8 +358,9 @@ Commit fixes before each resume. Codex reads `git diff <base>...HEAD` — uncomm
 After the final report, finalize the session:
 
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"full-codebase","issues":{"total_found":10,"total_fixed":7,"total_disputed":3}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"full-codebase","issues":{"total_found":10,"total_fixed":7,"total_disputed":3}}
+FINALIZE_EOF
 ```
 
 For working-tree mode, use `"scope":"working-tree"`. For branch mode, use `"scope":"branch"`.

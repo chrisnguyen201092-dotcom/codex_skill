@@ -54,22 +54,35 @@ SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
 
 ### 2b) Render Codex Prompt
 
-Compute `SKILLS_DIR` — the parent directory containing all installed skill directories:
-
 ```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 ```
 
 For draft mode:
 ```bash
-PROMPT=$(echo '{"COMMIT_MESSAGES":"...","DIFF_CONTEXT":"git diff --cached","USER_REQUEST":"...","SESSION_CONTEXT":"...","PROJECT_CONVENTIONS":"..."}' | \
-  node "$RUNNER" render --skill codex-commit-review --template draft-round1 --skills-dir "$SKILLS_DIR")
+MSGS_ESCAPED=$(printf '%s' "$COMMIT_MESSAGES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFF_ESCAPED=$(printf '%s' "$DIFF_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONV_ESCAPED=$(printf '%s' "$PROJECT_CONVENTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template draft-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"COMMIT_MESSAGES":$MSGS_ESCAPED,"DIFF_CONTEXT":$DIFF_ESCAPED,"USER_REQUEST":$REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"PROJECT_CONVENTIONS":$CONV_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For last mode:
 ```bash
-PROMPT=$(echo '{"COMMIT_MESSAGES":"...","DIFF_CONTEXT":"git diff HEAD~N..HEAD","COMMIT_LIST":"...","USER_REQUEST":"...","SESSION_CONTEXT":"...","PROJECT_CONVENTIONS":"..."}' | \
-  node "$RUNNER" render --skill codex-commit-review --template last-round1 --skills-dir "$SKILLS_DIR")
+MSGS_ESCAPED=$(printf '%s' "$COMMIT_MESSAGES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFF_ESCAPED=$(printf '%s' "$DIFF_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+LIST_ESCAPED=$(printf '%s' "$COMMIT_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONV_ESCAPED=$(printf '%s' "$PROJECT_CONVENTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template last-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"COMMIT_MESSAGES":$MSGS_ESCAPED,"DIFF_CONTEXT":$DIFF_ESCAPED,"COMMIT_LIST":$LIST_ESCAPED,"USER_REQUEST":$REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"PROJECT_CONVENTIONS":$CONV_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -77,7 +90,7 @@ PROMPT=$(echo '{"COMMIT_MESSAGES":"...","DIFF_CONTEXT":"git diff HEAD~N..HEAD","
 ### 2c) Start Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -98,14 +111,25 @@ If `status` is `"error"`, report to user.
 
 For draft mode:
 ```bash
-CLAUDE_PROMPT=$(echo '{"COMMIT_MESSAGES":"...","DIFF_CONTEXT":"git diff --cached","PROJECT_CONVENTIONS":"..."}' | \
-  node "$RUNNER" render --skill codex-commit-review --template claude-draft --skills-dir "$SKILLS_DIR")
+MSGS_ESCAPED=$(printf '%s' "$COMMIT_MESSAGES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFF_ESCAPED=$(printf '%s' "$DIFF_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONV_ESCAPED=$(printf '%s' "$PROJECT_CONVENTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CLAUDE_PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template claude-draft --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"COMMIT_MESSAGES":$MSGS_ESCAPED,"DIFF_CONTEXT":$DIFF_ESCAPED,"PROJECT_CONVENTIONS":$CONV_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For last mode:
 ```bash
-CLAUDE_PROMPT=$(echo '{"COMMIT_MESSAGES":"...","DIFF_CONTEXT":"git diff HEAD~N..HEAD","COMMIT_LIST":"...","PROJECT_CONVENTIONS":"..."}' | \
-  node "$RUNNER" render --skill codex-commit-review --template claude-last --skills-dir "$SKILLS_DIR")
+MSGS_ESCAPED=$(printf '%s' "$COMMIT_MESSAGES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFF_ESCAPED=$(printf '%s' "$DIFF_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+LIST_ESCAPED=$(printf '%s' "$COMMIT_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONV_ESCAPED=$(printf '%s' "$PROJECT_CONVENTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CLAUDE_PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template claude-last --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"COMMIT_MESSAGES":$MSGS_ESCAPED,"DIFF_CONTEXT":$DIFF_ESCAPED,"COMMIT_LIST":$LIST_ESCAPED,"PROJECT_CONVENTIONS":$CONV_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{CLAUDE_ANALYSIS_FORMAT}` is auto-injected by the render command from `references/claude-analysis-template.md`.
@@ -231,14 +255,33 @@ Map Claude's FINDING-{N} to Codex's ISSUE-{N} using the Matching Protocol in `re
 
 For draft mode:
 ```bash
-PROMPT=$(echo '{"SESSION_CONTEXT":"...","PROJECT_CONVENTIONS":"...","AGREED_POINTS":"...","DISAGREED_POINTS":"...","NEW_FINDINGS":"...","CONTINUE_OR_CONSENSUS_OR_STALEMATE":"...","DIFF_CONTEXT":"git diff --cached"}' | \
-  node "$RUNNER" render --skill codex-commit-review --template draft-round2+ --skills-dir "$SKILLS_DIR")
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONV_ESCAPED=$(printf '%s' "$PROJECT_CONVENTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+AGREED_ESCAPED=$(printf '%s' "$AGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISAGREED_ESCAPED=$(printf '%s' "$DISAGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+NEW_ESCAPED=$(printf '%s' "$NEW_FINDINGS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+STATUS_ESCAPED=$(printf '%s' "$CONTINUE_OR_CONSENSUS_OR_STALEMATE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFF_ESCAPED=$(printf '%s' "$DIFF_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template draft-round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"SESSION_CONTEXT":$CTX_ESCAPED,"PROJECT_CONVENTIONS":$CONV_ESCAPED,"AGREED_POINTS":$AGREED_ESCAPED,"DISAGREED_POINTS":$DISAGREED_ESCAPED,"NEW_FINDINGS":$NEW_ESCAPED,"CONTINUE_OR_CONSENSUS_OR_STALEMATE":$STATUS_ESCAPED,"DIFF_CONTEXT":$DIFF_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For last mode:
 ```bash
-PROMPT=$(echo '{"SESSION_CONTEXT":"...","PROJECT_CONVENTIONS":"...","AGREED_POINTS":"...","DISAGREED_POINTS":"...","NEW_FINDINGS":"...","CONTINUE_OR_CONSENSUS_OR_STALEMATE":"...","DIFF_CONTEXT":"git diff HEAD~N..HEAD","COMMIT_LIST":"..."}' | \
-  node "$RUNNER" render --skill codex-commit-review --template last-round2+ --skills-dir "$SKILLS_DIR")
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONV_ESCAPED=$(printf '%s' "$PROJECT_CONVENTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+AGREED_ESCAPED=$(printf '%s' "$AGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISAGREED_ESCAPED=$(printf '%s' "$DISAGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+NEW_ESCAPED=$(printf '%s' "$NEW_FINDINGS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+STATUS_ESCAPED=$(printf '%s' "$CONTINUE_OR_CONSENSUS_OR_STALEMATE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFF_ESCAPED=$(printf '%s' "$DIFF_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+LIST_ESCAPED=$(printf '%s' "$COMMIT_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template last-round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"SESSION_CONTEXT":$CTX_ESCAPED,"PROJECT_CONVENTIONS":$CONV_ESCAPED,"AGREED_POINTS":$AGREED_ESCAPED,"DISAGREED_POINTS":$DISAGREED_ESCAPED,"NEW_FINDINGS":$NEW_ESCAPED,"CONTINUE_OR_CONSENSUS_OR_STALEMATE":$STATUS_ESCAPED,"DIFF_CONTEXT":$DIFF_ESCAPED,"COMMIT_LIST":$LIST_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -246,7 +289,7 @@ PROMPT=$(echo '{"SESSION_CONTEXT":"...","PROJECT_CONVENTIONS":"...","AGREED_POIN
 ### 5b) Resume Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate resume output (JSON):**
@@ -323,13 +366,16 @@ Present a consensus report — **NEVER propose revised commit messages**.
 After the final round completes, finalize the session:
 
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"draft"}' | node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"draft"}
+FINALIZE_EOF
 ```
 
 For last mode, use `"scope":"last"`. Optionally include issue tracking:
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"draft","issues":{"total_found":3,"total_agreed":2,"total_disagreed":1}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"draft","issues":{"total_found":3,"total_agreed":2,"total_disagreed":1}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

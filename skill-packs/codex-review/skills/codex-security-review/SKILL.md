@@ -22,6 +22,50 @@ RUNNER="{{RUNNER_PATH}}"
 SKILLS_DIR="{{SKILLS_DIR}}"
 ```
 
+## Stdin Format
+
+**JSON stdin** (`render`, `finalize`) — use heredoc with **quoted** delimiter:
+```bash
+PROMPT=$(node "$RUNNER" render --skill codex-security-review --template round1 --skills-dir "$SKILLS_DIR" <<'RENDER_EOF'
+{"KEY":"value","OTHER":"value"}
+RENDER_EOF
+)
+```
+- Inside heredoc `<<'RENDER_EOF'`: characters `'`, `$`, `` ` `` are safe (shell does not expand)
+- JSON values must be properly escaped: `"` → `\"`, `\` → `\\`, newline → `\n`, tab → `\t`
+- **NEVER** use `echo '...'` — `'` characters in values will break shell quoting
+
+**When JSON contains dynamic data** (USER_REQUEST, SESSION_CONTEXT, SCOPE_SPECIFIC_INSTRUCTIONS, FIXED_ITEMS, DISPUTED_ITEMS, etc.):
+- Dynamic data MUST be JSON-escaped before embedding in heredoc
+- Use Node.js one-liner: `ESCAPED=$(printf '%s' "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')`
+- Result `$ESCAPED` already includes outer quotes (`"..."`) → embed directly into JSON
+- Use **unquoted** heredoc (`<<RENDER_EOF`) so shell expands `$ESCAPED`
+- Full example:
+```bash
+SCOPE_ESCAPED=$(printf '%s' "$SCOPE_INSTRUCTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PWD_ESCAPED=$(printf '%s' "$PWD" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+SCOPE_VAL_ESCAPED=$(printf '%s' "$SCOPE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-security-review --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"WORKING_DIR":$PWD_ESCAPED,"SCOPE":$SCOPE_VAL_ESCAPED,"SCOPE_SPECIFIC_INSTRUCTIONS":$SCOPE_ESCAPED}
+RENDER_EOF
+)
+```
+- If value is a simple literal (paths, fixed strings without `"`, `\`, newlines) → can inline directly in **quoted** heredoc (`<<'RENDER_EOF'`): `{"verdict":"APPROVE"}`
+
+**Nested render** (security-review only): When embedding render output into JSON of another render, MUST JSON-escape first:
+```bash
+ESCAPED=$(printf '%s' "$RAW_VALUE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+```
+Use **unquoted** heredoc (`<<RENDER_EOF`) for the outer render to expand `$ESCAPED`.
+
+**Plain text stdin** (`start`, `resume`) — use `printf '%s'`, **NOT** `echo`:
+```bash
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+```
+- `echo` interprets `\n`, `\t`, `-n`, `-e` → corrupts output. `printf '%s'` preserves content.
+
+**Forbidden characters in JSON values**: NULL byte (`\x00`) — truncates stdin.
+
 ## Workflow
 1. **Collect inputs**: Auto-detect context and announce defaults before asking anything.
    - **scope** (detected first): Run `git status --short | grep -v '^??'` — non-empty output → `working-tree`. Else run `git rev-list @{u}..HEAD` — non-empty → `branch`. If both conditions true, use `working-tree`. If neither, ask user (offer `full` as option).
@@ -29,18 +73,55 @@ SKILLS_DIR="{{SKILLS_DIR}}"
    - Announce: "Detected: scope=`$SCOPE`, effort=`$EFFORT` (N files changed). Proceeding — reply to override scope, effort, or both."
    - Set `SCOPE` and `EFFORT`. Only block for inputs that remain undetectable.
 2. Run pre-flight checks (see `references/workflow.md` §1.5).
-3. Render prompt: First render scope-specific template to get scope instructions, then render round1 with that value:
+3. Render prompt: First render scope-specific template to get scope instructions, then JSON-escape and render round1:
    ```bash
-   SCOPE_INSTRUCTIONS=$(echo '{"BASE_BRANCH":"..."}' | node "$RUNNER" render --skill codex-security-review --template "$SCOPE" --skills-dir "$SKILLS_DIR")
-   PROMPT=$(echo '{"WORKING_DIR":"...","SCOPE":"...","EFFORT":"...","BASE_BRANCH":"...","SCOPE_SPECIFIC_INSTRUCTIONS":"'"$SCOPE_INSTRUCTIONS"'"}' | node "$RUNNER" render --skill codex-security-review --template round1 --skills-dir "$SKILLS_DIR")
+   # Step 1: Render scope instructions
+   if [ "$SCOPE" = "branch" ]; then
+     BASE_BRANCH_ESCAPED=$(printf '%s' "$BASE_BRANCH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+     SCOPE_INSTRUCTIONS=$(node "$RUNNER" render --skill codex-security-review --template "$SCOPE" --skills-dir "$SKILLS_DIR" <<SCOPE_EOF
+   {"BASE_BRANCH":$BASE_BRANCH_ESCAPED}
+   SCOPE_EOF
+     )
+   else
+     SCOPE_INSTRUCTIONS=$(node "$RUNNER" render --skill codex-security-review --template "$SCOPE" --skills-dir "$SKILLS_DIR" <<'SCOPE_EOF'
+   {}
+   SCOPE_EOF
+     )
+   fi
+
+   # Step 2: JSON-escape rendered output (may contain quotes, newlines)
+   ESCAPED_SCOPE=$(printf '%s' "$SCOPE_INSTRUCTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+
+   # Step 3: Render round1 — unquoted heredoc to expand $ESCAPED_SCOPE
+   PWD_ESCAPED=$(printf '%s' "$PWD" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   SCOPE_VAL_ESCAPED=$(printf '%s' "$SCOPE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   EFFORT_ESCAPED=$(printf '%s' "$EFFORT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   BASE_BRANCH_ESCAPED=$(printf '%s' "$BASE_BRANCH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   PROMPT=$(node "$RUNNER" render --skill codex-security-review --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+   {"WORKING_DIR":$PWD_ESCAPED,"SCOPE":$SCOPE_VAL_ESCAPED,"EFFORT":$EFFORT_ESCAPED,"BASE_BRANCH":$BASE_BRANCH_ESCAPED,"SCOPE_SPECIFIC_INSTRUCTIONS":$ESCAPED_SCOPE}
+   RENDER_EOF
+   )
    ```
-4. Start round 1: `node "$RUNNER" init` → pipe rendered prompt to `node "$RUNNER" start "$SESSION_DIR"`.
+4. Start round 1: `node "$RUNNER" init` → pipe rendered prompt with `printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR"`.
 5. Poll: `node "$RUNNER" poll "$SESSION_DIR"` — returns JSON with `status`, `review.blocks`, `review.verdict`, and `activities`. Report **specific activities** from the activities array (e.g. which files Codex is scanning, what vulnerability patterns it's checking). NEVER report generic "Codex is running" — always extract concrete details.
 6. Parse `review.blocks` from poll JSON — each block has `id`, `prefix`, `title`, `category`, `severity`, `confidence`, `cwe`, `owasp`, `problem`, `evidence`, `attack_vector`, `suggested_fix`. The verdict includes `risk_summary` with severity counts. Use `review.raw_markdown` as fallback.
 7. Fix valid vulnerabilities in code; rebut false positives with evidence.
-8. **Render rebuttal**: `echo '{"FIXED_ITEMS":"...","DISPUTED_ITEMS":"...","SESSION_CONTEXT":"..."}' | node "$RUNNER" render --skill codex-security-review --template round2+ --skills-dir "$SKILLS_DIR"`.
-9. **Resume**: `echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 5 (Poll).** Repeat steps 5→6→7→8→9 until `review.verdict.status === "APPROVE"`, stalemate, or hard cap (5 rounds).
-10. **Finalize**: `echo '{"verdict":"...","scope":"..."}' | node "$RUNNER" finalize "$SESSION_DIR"`.
+8. **Render rebuttal**:
+   ```bash
+   FIXED_ESCAPED=$(printf '%s' "$FIXED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   DISPUTED_ESCAPED=$(printf '%s' "$DISPUTED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+   PROMPT=$(node "$RUNNER" render --skill codex-security-review --template round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+   {"FIXED_ITEMS":$FIXED_ESCAPED,"DISPUTED_ITEMS":$DISPUTED_ESCAPED}
+   RENDER_EOF
+   )
+   ```
+9. **Resume**: `printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 5 (Poll).** Repeat steps 5→6→7→8→9 until `review.verdict.status === "APPROVE"`, stalemate, or hard cap (5 rounds).
+10. **Finalize**:
+    ```bash
+    node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+    {"verdict":"...","scope":"..."}
+    FINALIZE_EOF
+    ```
 11. **Cleanup**: `node "$RUNNER" stop "$SESSION_DIR"`. Return final security assessment with risk summary and recommended next steps.
 
 ### Effort Level Guide

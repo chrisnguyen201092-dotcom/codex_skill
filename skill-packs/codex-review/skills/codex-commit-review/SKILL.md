@@ -22,6 +22,43 @@ RUNNER="{{RUNNER_PATH}}"
 SKILLS_DIR="{{SKILLS_DIR}}"
 ```
 
+## Stdin Format
+
+**JSON stdin** (`render`, `finalize`) — use heredoc with **quoted** delimiter:
+```bash
+PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template draft-round1 --skills-dir "$SKILLS_DIR" <<'RENDER_EOF'
+{"KEY":"value","OTHER":"value"}
+RENDER_EOF
+)
+```
+- Inside heredoc `<<'RENDER_EOF'`: characters `'`, `$`, `` ` `` are safe (shell does not expand)
+- JSON values must be properly escaped: `"` → `\"`, `\` → `\\`, newline → `\n`, tab → `\t`
+- **NEVER** use `echo '...'` — `'` characters in values will break shell quoting
+
+**When JSON contains dynamic data** (COMMIT_MESSAGES, COMMIT_DIFFS, SESSION_CONTEXT, CLAUDE_ANALYSIS, etc.):
+- Dynamic data MUST be JSON-escaped before embedding in heredoc
+- Use Node.js one-liner: `ESCAPED=$(printf '%s' "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')`
+- Result `$ESCAPED` already includes outer quotes (`"..."`) → embed directly into JSON
+- Use **unquoted** heredoc (`<<RENDER_EOF`) so shell expands `$ESCAPED`
+- Full example:
+```bash
+MSGS_ESCAPED=$(printf '%s' "$COMMIT_MESSAGES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DIFFS_ESCAPED=$(printf '%s' "$COMMIT_DIFFS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-commit-review --template draft-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"COMMIT_MESSAGES":$MSGS_ESCAPED,"DIFF_CONTEXT":$DIFFS_ESCAPED}
+RENDER_EOF
+)
+```
+- If value is a simple literal (paths, fixed strings without `"`, `\`, newlines) → can inline directly in **quoted** heredoc (`<<'RENDER_EOF'`): `{"verdict":"consensus"}`
+
+**Plain text stdin** (`start`, `resume`) — use `printf '%s'`, **NOT** `echo`:
+```bash
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+```
+- `echo` interprets `\n`, `\t`, `-n`, `-e` → corrupts output. `printf '%s'` preserves content.
+
+**Forbidden characters in JSON values**: NULL byte (`\x00`) — truncates stdin.
+
 ## Workflow
 1. **Collect inputs**: Auto-detect context and announce defaults before asking anything.
    - **mode**: Run `git diff --cached --quiet`; exit 1 → `draft` (staged changes); exit 0 → `last` (no staged); other → ask user.
@@ -30,14 +67,14 @@ SKILLS_DIR="{{SKILLS_DIR}}"
    - Set `MODE` and `EFFORT`. For `draft` mode, ask for commit message text. For `last` mode, N=1 default.
 2. Run pre-flight checks (see `references/workflow.md` §1.5).
 3. **Init**: `node "$RUNNER" init --skill-name codex-commit-review --working-dir "$PWD"` → parse `SESSION_DIR`.
-4. **Render Codex prompt** (mode-specific): `echo '{"COMMIT_MESSAGES":"...","DIFF_CONTEXT":"...","USER_REQUEST":"...","SESSION_CONTEXT":"...","PROJECT_CONVENTIONS":"..."}' | node "$RUNNER" render --skill codex-commit-review --template <template> --skills-dir "$SKILLS_DIR"` (template = `draft-round1` or `last-round1`; last-round1 also needs `"COMMIT_LIST":"..."`).
-5. **Start Codex** (background): `echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"` → JSON. **Do NOT poll yet — proceed to Step 6.**
+4. **Render Codex prompt** (mode-specific): pipe JSON via heredoc to `node "$RUNNER" render --skill codex-commit-review --template <template> --skills-dir "$SKILLS_DIR"` (template = `draft-round1` or `last-round1`; see Stdin Format — use Branch 2 for dynamic COMMIT_MESSAGES/DIFF_CONTEXT/SESSION_CONTEXT values; last-round1 also needs `"COMMIT_LIST":"..."`).
+5. **Start Codex** (background): `printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"` → JSON. **Do NOT poll yet — proceed to Step 6.**
 6. **Claude Independent Analysis** (BEFORE reading Codex output): Render Claude analysis prompt via `render --template claude-draft` or `claude-last`. Claude analyzes commit message(s) independently using format from `references/claude-analysis-template.md`. **INFORMATION BARRIER** — do NOT read any Codex output until analysis is complete. See `references/workflow.md` Step 2.5.
 7. **Poll**: `node "$RUNNER" poll "$SESSION_DIR"` — returns JSON with `status`, `review.blocks`, `review.overall_assessment`, `review.verdict`, and `activities`. Report **specific activities** from the activities array. NEVER report generic "Codex is running" — always extract concrete details.
 8. **Cross-Analysis**: Parse `review.blocks` and `review.overall_assessment` from poll JSON. Compare Claude's FINDING-{N} with Codex's ISSUE-{N}. Identify genuine agreements, genuine disagreements, and unique findings from each side. Use `review.raw_markdown` as fallback. See `references/workflow.md` Step 4.
 9. **Render round 2+ prompt**: `render --template draft-round2+` or `last-round2+` with debate state.
-10. **Resume**: `echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 7 (Poll).** Repeat steps 7→8→9→10 until CONSENSUS, STALEMATE, or hard cap (5 rounds).
-11. **Finalize**: `echo '{"verdict":"...","scope":"..."}' | node "$RUNNER" finalize "$SESSION_DIR"`. Present final consensus report. **NEVER propose revised commit messages.**
+10. **Resume**: `printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 7 (Poll).** Repeat steps 7→8→9→10 until CONSENSUS, STALEMATE, or hard cap (5 rounds).
+11. **Finalize**: pipe JSON via heredoc to `node "$RUNNER" finalize "$SESSION_DIR"` (see Stdin Format — use quoted heredoc for literal verdict/scope values). Present final consensus report. **NEVER propose revised commit messages.**
 12. **Cleanup**: `node "$RUNNER" stop "$SESSION_DIR"`. Return final review summary and `$SESSION_DIR` path.
 
 ### Effort Level Guide

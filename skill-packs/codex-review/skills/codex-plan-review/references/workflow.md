@@ -62,17 +62,23 @@ SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
 
 ### 2b) Render Prompt
 
-Compute `SKILLS_DIR` from the runner path — it is the grandparent directory of the runner script:
+Compute `SKILLS_DIR` from the runner path:
 
 ```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 ```
 
 This resolves to the directory containing all installed skill directories (e.g., `~/.claude/skills`).
 
 ```bash
-PROMPT=$(echo '{"PLAN_PATH":"/abs/path/to/plan.md","USER_REQUEST":"...","SESSION_CONTEXT":"...","ACCEPTANCE_CRITERIA":"..."}' | \
-  node "$RUNNER" render --skill codex-plan-review --template round1 --skills-dir "$SKILLS_DIR")
+USER_REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+AC_ESCAPED=$(printf '%s' "$ACCEPTANCE_CRITERIA" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PLAN_PATH_ESCAPED=$(printf '%s' "$PLAN_PATH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-plan-review --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"PLAN_PATH":$PLAN_PATH_ESCAPED,"USER_REQUEST":$USER_REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"ACCEPTANCE_CRITERIA":$AC_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -80,7 +86,7 @@ PROMPT=$(echo '{"PLAN_PATH":"/abs/path/to/plan.md","USER_REQUEST":"...","SESSION
 ### 2c) Start Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -179,14 +185,20 @@ Record the set of open (unresolved) ISSUE-{N} IDs for stalemate tracking.
 ### 5a) Render Rebuttal Prompt
 
 ```bash
-PROMPT=$(echo '{"PLAN_PATH":"/abs/path/to/plan.md","SESSION_CONTEXT":"...","FIXED_ITEMS":"...","DISPUTED_ITEMS":"..."}' | \
-  node "$RUNNER" render --skill codex-plan-review --template rebuttal --skills-dir "$SKILLS_DIR")
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+FIXED_ESCAPED=$(printf '%s' "$FIXED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISPUTED_ESCAPED=$(printf '%s' "$DISPUTED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PLAN_PATH_ESCAPED=$(printf '%s' "$PLAN_PATH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-plan-review --template rebuttal --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"PLAN_PATH":$PLAN_PATH_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"FIXED_ITEMS":$FIXED_ESCAPED,"DISPUTED_ITEMS":$DISPUTED_ESCAPED}
+RENDER_EOF
+)
 ```
 
 ### 5b) Resume Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate resume output (JSON):**
@@ -238,13 +250,16 @@ Then present:
 After the final round completes, finalize the session:
 
 ```bash
-echo '{"verdict":"APPROVE"}' | node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"APPROVE"}
+FINALIZE_EOF
 ```
 
 Optionally include issue tracking:
 ```bash
-echo '{"verdict":"APPROVE","issues":{"total_found":5,"total_fixed":3,"total_disputed":2}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"APPROVE","issues":{"total_found":5,"total_fixed":3,"total_disputed":2}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

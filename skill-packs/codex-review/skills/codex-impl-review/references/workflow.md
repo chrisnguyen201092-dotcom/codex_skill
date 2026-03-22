@@ -81,14 +81,23 @@ Use the `render` command to assemble the prompt from templates. The runner reads
 
 For working-tree mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"..."}' | \
-  node "$RUNNER" render --skill codex-impl-review --template working-tree-round1 --skills-dir "$SKILLS_DIR")
+USER_REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-impl-review --template working-tree-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$USER_REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For branch mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","BASE_BRANCH":"main"}' | \
-  node "$RUNNER" render --skill codex-impl-review --template branch-round1 --skills-dir "$SKILLS_DIR")
+USER_REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_BRANCH_ESCAPED=$(printf '%s' "$BASE_BRANCH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-impl-review --template branch-round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$USER_REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"BASE_BRANCH":$BASE_BRANCH_ESCAPED}
+RENDER_EOF
+)
 ```
 
 **Placeholder values:**
@@ -101,7 +110,7 @@ PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","BASE_BRANCH":"main
 ## 4) Start Round 1
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate JSON output:**
@@ -211,14 +220,27 @@ Record the set of open (unresolved) ISSUE-{N} IDs for stalemate tracking.
 
 For working-tree mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","FIXED_ITEMS":"...","DISPUTED_ITEMS":"..."}' | \
-  node "$RUNNER" render --skill codex-impl-review --template rebuttal-working-tree --skills-dir "$SKILLS_DIR")
+USER_REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+FIXED_ESCAPED=$(printf '%s' "$FIXED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISPUTED_ESCAPED=$(printf '%s' "$DISPUTED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-impl-review --template rebuttal-working-tree --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$USER_REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"FIXED_ITEMS":$FIXED_ESCAPED,"DISPUTED_ITEMS":$DISPUTED_ESCAPED}
+RENDER_EOF
+)
 ```
 
 For branch mode:
 ```bash
-PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","FIXED_ITEMS":"...","DISPUTED_ITEMS":"...","BASE_BRANCH":"main"}' | \
-  node "$RUNNER" render --skill codex-impl-review --template rebuttal-branch --skills-dir "$SKILLS_DIR")
+USER_REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+FIXED_ESCAPED=$(printf '%s' "$FIXED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISPUTED_ESCAPED=$(printf '%s' "$DISPUTED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_BRANCH_ESCAPED=$(printf '%s' "$BASE_BRANCH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-impl-review --template rebuttal-branch --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"USER_REQUEST":$USER_REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED,"FIXED_ITEMS":$FIXED_ESCAPED,"DISPUTED_ITEMS":$DISPUTED_ESCAPED,"BASE_BRANCH":$BASE_BRANCH_ESCAPED}
+RENDER_EOF
+)
 ```
 
 **Placeholder values for rebuttals:**
@@ -228,7 +250,7 @@ PROMPT=$(echo '{"USER_REQUEST":"...","SESSION_CONTEXT":"...","FIXED_ITEMS":"..."
 ### 7b) Resume Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate resume output (JSON):**
@@ -278,13 +300,16 @@ Then present:
 After the final round completes, finalize the session:
 
 ```bash
-echo '{"verdict":"APPROVE","scope":"working-tree"}' | node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"APPROVE","scope":"working-tree"}
+FINALIZE_EOF
 ```
 
 For branch mode, use `"scope":"branch"`. Optionally include issue tracking:
 ```bash
-echo '{"verdict":"APPROVE","scope":"working-tree","issues":{"total_found":5,"total_fixed":3,"total_disputed":2}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"APPROVE","scope":"working-tree","issues":{"total_found":5,"total_fixed":3,"total_disputed":2}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

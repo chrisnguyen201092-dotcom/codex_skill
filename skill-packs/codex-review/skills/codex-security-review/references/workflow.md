@@ -54,6 +54,7 @@ Ask user: `working-tree` (default), `branch`, or `full`.
   2. Validate ref: `git rev-parse --verify <base>` — fail-fast if not found.
   3. Fallback order if user doesn't specify: `main` → `master` → remote HEAD (`git symbolic-ref refs/remotes/origin/HEAD`).
   4. Confirm with user if using fallback.
+  5. Bind variable: `BASE_BRANCH=<validated value>` — use this consistently in all subsequent steps.
 - **Clean working tree required**: run `git diff --quiet && git diff --cached --quiet`. If uncommitted changes exist, tell user to commit or stash first, or switch to working-tree mode.
 - Branch diff: `git diff <base>...HEAD`.
 - Commit log: `git log <base>..HEAD --oneline`.
@@ -83,35 +84,46 @@ SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
 
 ### 2b) Render Prompt
 
-Compute `SKILLS_DIR` from the runner path — it is two directories up from the runner:
-```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
-```
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 
 **Step 1: Render scope-specific instructions:**
 
 For working-tree mode:
 ```bash
-SCOPE_INSTRUCTIONS=$(echo '{}' | \
-  node "$RUNNER" render --skill codex-security-review --template working-tree --skills-dir "$SKILLS_DIR")
+SCOPE_INSTRUCTIONS=$(node "$RUNNER" render --skill codex-security-review --template working-tree --skills-dir "$SKILLS_DIR" <<'SCOPE_EOF'
+{}
+SCOPE_EOF
+)
 ```
 
 For branch mode:
 ```bash
-SCOPE_INSTRUCTIONS=$(echo '{"BASE_BRANCH":"main"}' | \
-  node "$RUNNER" render --skill codex-security-review --template branch --skills-dir "$SKILLS_DIR")
+BASE_BRANCH_ESCAPED=$(printf '%s' "$BASE_BRANCH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+SCOPE_INSTRUCTIONS=$(node "$RUNNER" render --skill codex-security-review --template branch --skills-dir "$SKILLS_DIR" <<SCOPE_EOF
+{"BASE_BRANCH":$BASE_BRANCH_ESCAPED}
+SCOPE_EOF
+)
 ```
 
 For full mode:
 ```bash
-SCOPE_INSTRUCTIONS=$(echo '{}' | \
-  node "$RUNNER" render --skill codex-security-review --template full --skills-dir "$SKILLS_DIR")
+SCOPE_INSTRUCTIONS=$(node "$RUNNER" render --skill codex-security-review --template full --skills-dir "$SKILLS_DIR" <<'SCOPE_EOF'
+{}
+SCOPE_EOF
+)
 ```
 
-**Step 2: Render round1 prompt with scope instructions:**
+**Step 2: JSON-escape scope instructions and render round1 prompt:**
 ```bash
-PROMPT=$(echo '{"WORKING_DIR":"/path/to/project","SCOPE":"working-tree","EFFORT":"high","BASE_BRANCH":"","SCOPE_SPECIFIC_INSTRUCTIONS":"'"$SCOPE_INSTRUCTIONS"'"}' | \
-  node "$RUNNER" render --skill codex-security-review --template round1 --skills-dir "$SKILLS_DIR")
+ESCAPED_SCOPE=$(printf '%s' "$SCOPE_INSTRUCTIONS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PWD_ESCAPED=$(printf '%s' "$PWD" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+SCOPE_VAL_ESCAPED=$(printf '%s' "$SCOPE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+EFFORT_ESCAPED=$(printf '%s' "$EFFORT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_BRANCH_ESCAPED=$(printf '%s' "$BASE_BRANCH" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-security-review --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"WORKING_DIR":$PWD_ESCAPED,"SCOPE":$SCOPE_VAL_ESCAPED,"EFFORT":$EFFORT_ESCAPED,"BASE_BRANCH":$BASE_BRANCH_ESCAPED,"SCOPE_SPECIFIC_INSTRUCTIONS":$ESCAPED_SCOPE}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -119,7 +131,7 @@ PROMPT=$(echo '{"WORKING_DIR":"/path/to/project","SCOPE":"working-tree","EFFORT"
 ### 2c) Start Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -246,14 +258,18 @@ Record the set of open (unresolved) ISSUE-{N} IDs for stalemate tracking.
 ### 5a) Render Rebuttal Prompt
 
 ```bash
-PROMPT=$(echo '{"FIXED_ITEMS":"...","DISPUTED_ITEMS":"..."}' | \
-  node "$RUNNER" render --skill codex-security-review --template round2+ --skills-dir "$SKILLS_DIR")
+FIXED_ESCAPED=$(printf '%s' "$FIXED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISPUTED_ESCAPED=$(printf '%s' "$DISPUTED_ITEMS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-security-review --template round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"FIXED_ITEMS":$FIXED_ESCAPED,"DISPUTED_ITEMS":$DISPUTED_ESCAPED}
+RENDER_EOF
+)
 ```
 
 ### 5b) Resume Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate resume output (JSON):**
@@ -312,13 +328,16 @@ Then present:
 After the final round completes, finalize the session:
 
 ```bash
-echo '{"verdict":"APPROVE","scope":"working-tree"}' | node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"APPROVE","scope":"working-tree"}
+FINALIZE_EOF
 ```
 
 For branch mode, use `"scope":"branch"`. For full mode, use `"scope":"full"`. Optionally include issue tracking:
 ```bash
-echo '{"verdict":"APPROVE","scope":"working-tree","issues":{"total_found":5,"total_fixed":3,"total_disputed":2}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"APPROVE","scope":"working-tree","issues":{"total_found":5,"total_fixed":3,"total_disputed":2}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

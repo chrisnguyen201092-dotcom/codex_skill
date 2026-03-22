@@ -63,14 +63,19 @@ SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
 
 ### 2b) Render Prompt
 
-Compute `SKILLS_DIR` from the runner path:
-```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
-```
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 
 ```bash
-PROMPT=$(echo '{"PR_TITLE":"...","PR_DESCRIPTION":"...","BASE_BRANCH":"main","COMMIT_COUNT":"5","COMMIT_LIST":"...","USER_REQUEST":"...","SESSION_CONTEXT":"..."}' | \
-  node "$RUNNER" render --skill codex-pr-review --template round1 --skills-dir "$SKILLS_DIR")
+REQ_ESCAPED=$(printf '%s' "$USER_REQUEST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DESC_ESCAPED=$(printf '%s' "$PR_DESCRIPTION" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+COMMITS_ESCAPED=$(printf '%s' "$COMMIT_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_ESCAPED=$(printf '%s' "$BASE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+COMMIT_COUNT_ESCAPED=$(printf '%s' "$COMMIT_COUNT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-pr-review --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"PR_TITLE":"...","PR_DESCRIPTION":$DESC_ESCAPED,"BASE_BRANCH":$BASE_ESCAPED,"COMMIT_COUNT":$COMMIT_COUNT_ESCAPED,"COMMIT_LIST":$COMMITS_ESCAPED,"USER_REQUEST":$REQ_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -78,7 +83,7 @@ PROMPT=$(echo '{"PR_TITLE":"...","PR_DESCRIPTION":"...","BASE_BRANCH":"main","CO
 ### 2c) Start Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -98,8 +103,14 @@ If `status` is `"error"`, report to user.
 ### Render Claude Analysis Prompt
 
 ```bash
-CLAUDE_PROMPT=$(echo '{"PR_TITLE":"...","PR_DESCRIPTION":"...","BASE_BRANCH":"main","COMMIT_COUNT":"5","COMMIT_LIST":"..."}' | \
-  node "$RUNNER" render --skill codex-pr-review --template claude-analysis --skills-dir "$SKILLS_DIR")
+DESC_ESCAPED=$(printf '%s' "$PR_DESCRIPTION" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+COMMITS_ESCAPED=$(printf '%s' "$COMMIT_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_ESCAPED=$(printf '%s' "$BASE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+COMMIT_COUNT_ESCAPED=$(printf '%s' "$COMMIT_COUNT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CLAUDE_PROMPT=$(node "$RUNNER" render --skill codex-pr-review --template claude-analysis --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"PR_TITLE":"...","PR_DESCRIPTION":$DESC_ESCAPED,"BASE_BRANCH":$BASE_ESCAPED,"COMMIT_COUNT":$COMMIT_COUNT_ESCAPED,"COMMIT_LIST":$COMMITS_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{CLAUDE_ANALYSIS_FORMAT}` is auto-injected by the render command from `references/claude-analysis-template.md`.
@@ -234,8 +245,17 @@ Map Claude's FINDING-{N} to Codex's ISSUE-{N} using the Matching Protocol in `re
 ### 5a) Render Response Prompt
 
 ```bash
-PROMPT=$(echo '{"SESSION_CONTEXT":"...","PR_TITLE":"...","BASE_BRANCH":"main","COMMIT_COUNT":"5","COMMIT_LIST":"...","AGREED_POINTS":"...","DISAGREED_POINTS":"...","NEW_FINDINGS":"...","CONTINUE_OR_CONSENSUS_OR_STALEMATE":"..."}' | \
-  node "$RUNNER" render --skill codex-pr-review --template round2+ --skills-dir "$SKILLS_DIR")
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+AGREED_ESCAPED=$(printf '%s' "$AGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISAGREED_ESCAPED=$(printf '%s' "$DISAGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+NEW_ESCAPED=$(printf '%s' "$NEW_FINDINGS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+COMMITS_ESCAPED=$(printf '%s' "$COMMIT_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+BASE_ESCAPED=$(printf '%s' "$BASE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+COMMIT_COUNT_ESCAPED=$(printf '%s' "$COMMIT_COUNT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-pr-review --template round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"SESSION_CONTEXT":$CTX_ESCAPED,"PR_TITLE":"...","BASE_BRANCH":$BASE_ESCAPED,"COMMIT_COUNT":$COMMIT_COUNT_ESCAPED,"COMMIT_LIST":$COMMITS_ESCAPED,"AGREED_POINTS":$AGREED_ESCAPED,"DISAGREED_POINTS":$DISAGREED_ESCAPED,"NEW_FINDINGS":$NEW_ESCAPED,"CONTINUE_OR_CONSENSUS_OR_STALEMATE":"..."}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -243,7 +263,7 @@ PROMPT=$(echo '{"SESSION_CONTEXT":"...","PR_TITLE":"...","BASE_BRANCH":"main","C
 ### 5b) Resume Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate resume output (JSON):**
@@ -381,13 +401,16 @@ Reason: {rationale based on scorecard and agreed findings}
 After the final round completes, finalize the session:
 
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"branch"}' | node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"branch"}
+FINALIZE_EOF
 ```
 
 Optionally include issue tracking:
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"branch","issues":{"total_found":5,"agreed":3,"disagreed":2}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"branch","issues":{"total_found":5,"agreed":3,"disagreed":2}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

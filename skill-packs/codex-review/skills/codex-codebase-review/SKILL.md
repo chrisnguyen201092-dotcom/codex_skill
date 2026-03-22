@@ -21,6 +21,43 @@ RUNNER="{{RUNNER_PATH}}"
 SKILLS_DIR="{{SKILLS_DIR}}"
 ```
 
+## Stdin Format
+
+**JSON stdin** (`render`, `finalize`) — use heredoc with **quoted** delimiter:
+```bash
+PROMPT=$(node "$RUNNER" render --skill codex-codebase-review --template chunk-review --skills-dir "$SKILLS_DIR" <<'RENDER_EOF'
+{"KEY":"value","OTHER":"value"}
+RENDER_EOF
+)
+```
+- Inside heredoc `<<'RENDER_EOF'`: characters `'`, `$`, `` ` `` are safe (shell does not expand)
+- JSON values must be properly escaped: `"` → `\"`, `\` → `\\`, newline → `\n`, tab → `\t`
+- **NEVER** use `echo '...'` — `'` characters in values will break shell quoting
+
+**When JSON contains dynamic data** (CHUNK_FILES, MODULE_NAME, SESSION_CONTEXT, CHUNK_FINDINGS, etc.):
+- Dynamic data MUST be JSON-escaped before embedding in heredoc
+- Use Node.js one-liner: `ESCAPED=$(printf '%s' "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')`
+- Result `$ESCAPED` already includes outer quotes (`"..."`) → embed directly into JSON
+- Use **unquoted** heredoc (`<<RENDER_EOF`) so shell expands `$ESCAPED`
+- Full example:
+```bash
+FILES_ESCAPED=$(printf '%s' "$CHUNK_FILES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PWD_ESCAPED=$(printf '%s' "$PWD" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-codebase-review --template chunk-review --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"WORKING_DIR":$PWD_ESCAPED,"MODULE_NAME":"auth","CHUNK_FILES":$FILES_ESCAPED}
+RENDER_EOF
+)
+```
+- If value is a simple literal (paths, fixed strings without `"`, `\`, newlines) → can inline directly in **quoted** heredoc (`<<'RENDER_EOF'`): `{"verdict":"APPROVE"}`
+
+**Plain text stdin** (`start`, `resume`) — use `printf '%s'`, **NOT** `echo`:
+```bash
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+```
+- `echo` interprets `\n`, `\t`, `-n`, `-e` → corrupts output. `printf '%s'` preserves content.
+
+**Forbidden characters in JSON values**: NULL byte (`\x00`) — truncates stdin.
+
 ## Workflow
 1. **Collect inputs**: Auto-detect effort and announce default before asking anything.
    - **effort**: Count source files `find . -type f -name '*.js' -o -name '*.ts' -o -name '*.py' -o -name '*.go' -o -name '*.rs' -o -name '*.java' -o -name '*.rb' -o -name '*.c' -o -name '*.cpp' -o -name '*.h' | wc -l` — <50 → `medium`, 50-200 → `high`, >200 → `xhigh`; default `high`.

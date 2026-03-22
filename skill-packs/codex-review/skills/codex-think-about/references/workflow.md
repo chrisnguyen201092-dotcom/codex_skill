@@ -20,15 +20,19 @@ SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
 
 ### 2b) Render Prompt
 
-Compute `SKILLS_DIR` from the runner path — it is the grandparent directory of the runner script (e.g., `~/.claude/skills`):
-
 ```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 ```
 
 ```bash
-PROMPT=$(echo '{"QUESTION":"...","PROJECT_CONTEXT":"...","RELEVANT_FILES":"...","CONSTRAINTS":"..."}' | \
-  node "$RUNNER" render --skill codex-think-about --template round1 --skills-dir "$SKILLS_DIR")
+QUESTION_ESCAPED=$(printf '%s' "$QUESTION" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROJECT_CONTEXT_ESCAPED=$(printf '%s' "$PROJECT_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+RELEVANT_FILES_ESCAPED=$(printf '%s' "$RELEVANT_FILES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONSTRAINTS_ESCAPED=$(printf '%s' "$CONSTRAINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-think-about --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"QUESTION":$QUESTION_ESCAPED,"PROJECT_CONTEXT":$PROJECT_CONTEXT_ESCAPED,"RELEVANT_FILES":$RELEVANT_FILES_ESCAPED,"CONSTRAINTS":$CONSTRAINTS_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{QUESTION}` is the confirmed sharpened question from SKILL.md step 1 (or the original question if sharpening was skipped).
@@ -38,7 +42,7 @@ PROMPT=$(echo '{"QUESTION":"...","PROJECT_CONTEXT":"...","RELEVANT_FILES":"...",
 ### 2c) Start Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT" --sandbox danger-full-access
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT" --sandbox danger-full-access
 ```
 
 **Validate start output (JSON):**
@@ -61,8 +65,14 @@ If `status` is `"error"`, report to user.
 
 1. Render Claude analysis prompt:
 ```bash
-CLAUDE_PROMPT=$(echo '{"QUESTION":"...","PROJECT_CONTEXT":"...","RELEVANT_FILES":"...","CONSTRAINTS":"..."}' | \
-  node "$RUNNER" render --skill codex-think-about --template claude-analysis --skills-dir "$SKILLS_DIR")
+QUESTION_ESCAPED=$(printf '%s' "$QUESTION" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROJECT_CONTEXT_ESCAPED=$(printf '%s' "$PROJECT_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+RELEVANT_FILES_ESCAPED=$(printf '%s' "$RELEVANT_FILES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONSTRAINTS_ESCAPED=$(printf '%s' "$CONSTRAINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CLAUDE_PROMPT=$(node "$RUNNER" render --skill codex-think-about --template claude-analysis --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"QUESTION":$QUESTION_ESCAPED,"PROJECT_CONTEXT":$PROJECT_CONTEXT_ESCAPED,"RELEVANT_FILES":$RELEVANT_FILES_ESCAPED,"CONSTRAINTS":$CONSTRAINTS_ESCAPED}
+RENDER_EOF
+)
 ```
 `{CLAUDE_ANALYSIS_FORMAT}` is auto-injected by the render command from `references/claude-analysis-template.md`.
 
@@ -269,8 +279,14 @@ Clean up: `rm -rf "$FS_GUARD_DIR"` after round.
 ### 5a) Render Round 2+ Prompt
 
 ```bash
-PROMPT=$(echo '{"AGREED_POINTS":"...","DISAGREED_POINTS":"...","NEW_PERSPECTIVES":"...","CONTINUE_OR_CONSENSUS_OR_STALEMATE":"..."}' | \
-  node "$RUNNER" render --skill codex-think-about --template round2+ --skills-dir "$SKILLS_DIR")
+AGREED_ESCAPED=$(printf '%s' "$AGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+DISAGREED_ESCAPED=$(printf '%s' "$DISAGREED_POINTS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+NEW_PERSP_ESCAPED=$(printf '%s' "$NEW_PERSPECTIVES" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+STATUS_ESCAPED=$(printf '%s' "$CONTINUE_OR_CONSENSUS_OR_STALEMATE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-think-about --template round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"AGREED_POINTS":$AGREED_ESCAPED,"DISAGREED_POINTS":$DISAGREED_ESCAPED,"NEW_PERSPECTIVES":$NEW_PERSP_ESCAPED,"CONTINUE_OR_CONSENSUS_OR_STALEMATE":$STATUS_ESCAPED}
+RENDER_EOF
+)
 ```
 
 `{OUTPUT_FORMAT}` is auto-injected by the render command from `references/output-format.md`.
@@ -280,7 +296,7 @@ PROMPT=$(echo '{"AGREED_POINTS":"...","DISAGREED_POINTS":"...","NEW_PERSPECTIVES
 ### 5b) Resume Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate resume output (JSON):**
@@ -328,13 +344,16 @@ Then **go back to step 3 (Poll).** After poll completes, repeat step 4 (Cross-An
 After the final synthesis is complete, finalize the session:
 
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"think-about"}' | node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"think-about"}
+FINALIZE_EOF
 ```
 
 Optionally include debate tracking:
 ```bash
-echo '{"verdict":"CONSENSUS","scope":"think-about","insights":{"total_agreed":5,"total_disagreed":2,"total_open":1}}' | \
-  node "$RUNNER" finalize "$SESSION_DIR"
+node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"CONSENSUS","scope":"think-about","insights":{"total_agreed":5,"total_disagreed":2,"total_open":1}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

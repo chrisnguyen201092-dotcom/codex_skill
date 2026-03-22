@@ -135,13 +135,7 @@ For `low` effort: skip confirmation, auto-proceed.
 
 ### Setup
 
-Compute `SKILLS_DIR` from the runner path:
-
-```bash
-SKILLS_DIR="$(dirname "$(dirname "$RUNNER")")"
-```
-
-This resolves to the directory containing all installed skill directories (e.g., `~/.claude/skills`).
+# SKILLS_DIR is declared in SKILL.md ## Runner block — use it directly, do NOT recompute.
 
 Initialize an array to track all session directories for cleanup:
 
@@ -170,8 +164,15 @@ ALL_SESSION_DIRS+=("$CHUNK_SESSION_DIR")
 #### 4b) Render Prompt
 
 ```bash
-PROMPT=$(echo '{"PROJECT_TYPE":"...","CHUNK_NAME":"...","FOCUS_AREAS":"...","FILE_LIST":"...","CONTEXT_SUMMARY":"..."}' | \
-  node "$RUNNER" render --skill codex-codebase-review --template chunk-review --skills-dir "$SKILLS_DIR")
+FILES_ESCAPED=$(printf '%s' "$FILE_LIST" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CONTEXT_ESCAPED=$(printf '%s' "$CONTEXT_SUMMARY" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROJECT_TYPE_ESCAPED=$(printf '%s' "$PROJECT_TYPE" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CHUNK_NAME_ESCAPED=$(printf '%s' "$CHUNK_NAME" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+FOCUS_AREAS_ESCAPED=$(printf '%s' "$FOCUS_AREAS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-codebase-review --template chunk-review --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"PROJECT_TYPE":$PROJECT_TYPE_ESCAPED,"CHUNK_NAME":$CHUNK_NAME_ESCAPED,"FOCUS_AREAS":$FOCUS_AREAS_ESCAPED,"FILE_LIST":$FILES_ESCAPED,"CONTEXT_SUMMARY":$CONTEXT_ESCAPED}
+RENDER_EOF
+)
 ```
 
 Template variables:
@@ -184,7 +185,7 @@ Template variables:
 #### 4c) Start Codex
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$CHUNK_SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$CHUNK_SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -280,7 +281,9 @@ Chunk {N}/{TOTAL} [{name}]: {issue_count} issues ({C}C/{H}H/{M}M/{L}L)
 #### 4h) Finalize Chunk
 
 ```bash
-echo '{"verdict":"...","scope":"codebase"}' | node "$RUNNER" finalize "$CHUNK_SESSION_DIR"
+node "$RUNNER" finalize "$CHUNK_SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"...","scope":"codebase"}
+FINALIZE_EOF
 ```
 
 **Validate finalize output (JSON):**
@@ -390,14 +393,17 @@ ALL_SESSION_DIRS+=("$VALIDATION_SESSION_DIR")
 ### 6b) Render Validation Prompt
 
 ```bash
-PROMPT=$(echo '{"CROSS_FINDINGS":"..."}' | \
-  node "$RUNNER" render --skill codex-codebase-review --template validation --skills-dir "$SKILLS_DIR")
+CROSS_ESCAPED=$(printf '%s' "$CROSS_FINDINGS" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-codebase-review --template validation --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"CROSS_FINDINGS":$CROSS_ESCAPED}
+RENDER_EOF
+)
 ```
 
 ### 6c) Start + Poll
 
 ```bash
-echo "$PROMPT" | node "$RUNNER" start "$VALIDATION_SESSION_DIR" --effort "$EFFORT"
+printf '%s' "$PROMPT" | node "$RUNNER" start "$VALIDATION_SESSION_DIR" --effort "$EFFORT"
 ```
 
 **Validate start output (JSON):**
@@ -444,7 +450,9 @@ Use `review.raw_markdown` as fallback if structured parsing misses edge cases.
 ### 6f) Finalize Validation
 
 ```bash
-echo '{"verdict":"...","scope":"codebase"}' | node "$RUNNER" finalize "$VALIDATION_SESSION_DIR"
+node "$RUNNER" finalize "$VALIDATION_SESSION_DIR" <<'FINALIZE_EOF'
+{"verdict":"...","scope":"codebase"}
+FINALIZE_EOF
 ```
 
 ## 7) Final Report
@@ -496,10 +504,13 @@ MASTER_SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
 ALL_SESSION_DIRS+=("$MASTER_SESSION_DIR")
 ```
 
-Finalize with aggregated stats:
+Finalize with aggregated stats (compute counters from chunk reviews before calling):
 ```bash
-echo '{"verdict":"...","scope":"codebase","issues":{"total_found":N,"total_fixed":0,"total_disputed":0}}' | \
-  node "$RUNNER" finalize "$MASTER_SESSION_DIR"
+# Aggregate counters from chunk review results before finalize
+# TOTAL_FOUND, TOTAL_FIXED, TOTAL_DISPUTED must be integers computed from chunk sessions
+node "$RUNNER" finalize "$MASTER_SESSION_DIR" <<FINALIZE_EOF
+{"verdict":"...","scope":"codebase","issues":{"total_found":$TOTAL_FOUND,"total_fixed":$TOTAL_FIXED,"total_disputed":$TOTAL_DISPUTED}}
+FINALIZE_EOF
 ```
 
 The runner auto-computes `meta.json` with timing, round count, and session metadata.

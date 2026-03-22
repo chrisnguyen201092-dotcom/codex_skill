@@ -21,6 +21,43 @@ RUNNER="{{RUNNER_PATH}}"
 SKILLS_DIR="{{SKILLS_DIR}}"
 ```
 
+## Stdin Format
+
+**JSON stdin** (`render`, `finalize`) — use heredoc with **quoted** delimiter:
+```bash
+PROMPT=$(node "$RUNNER" render --skill codex-think-about --template round1 --skills-dir "$SKILLS_DIR" <<'RENDER_EOF'
+{"KEY":"value","OTHER":"value"}
+RENDER_EOF
+)
+```
+- Inside heredoc `<<'RENDER_EOF'`: characters `'`, `$`, `` ` `` are safe (shell does not expand)
+- JSON values must be properly escaped: `"` → `\"`, `\` → `\\`, newline → `\n`, tab → `\t`
+- **NEVER** use `echo '...'` — `'` characters in values will break shell quoting
+
+**When JSON contains dynamic data** (QUESTION, TOPIC, SESSION_CONTEXT, CLAUDE_ANALYSIS, etc.):
+- Dynamic data MUST be JSON-escaped before embedding in heredoc
+- Use Node.js one-liner: `ESCAPED=$(printf '%s' "$RAW" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')`
+- Result `$ESCAPED` already includes outer quotes (`"..."`) → embed directly into JSON
+- Use **unquoted** heredoc (`<<RENDER_EOF`) so shell expands `$ESCAPED`
+- Full example:
+```bash
+QUESTION_ESCAPED=$(printf '%s' "$QUESTION" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+CTX_ESCAPED=$(printf '%s' "$SESSION_CONTEXT" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))')
+PROMPT=$(node "$RUNNER" render --skill codex-think-about --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
+{"QUESTION":$QUESTION_ESCAPED,"SESSION_CONTEXT":$CTX_ESCAPED}
+RENDER_EOF
+)
+```
+- If value is a simple literal (paths, fixed strings without `"`, `\`, newlines) → can inline directly in **quoted** heredoc (`<<'RENDER_EOF'`): `{"verdict":"consensus"}`
+
+**Plain text stdin** (`start`, `resume`) — use `printf '%s'`, **NOT** `echo`:
+```bash
+printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
+```
+- `echo` interprets `\n`, `\t`, `-n`, `-e` → corrupts output. `printf '%s'` preserves content.
+
+**Forbidden characters in JSON values**: NULL byte (`\x00`) — truncates stdin.
+
 ## Workflow
 1. **Sharpen question** — follow `references/question-sharpening.md`.
    If that workflow produces a substantive rewrite, confirm with user (Y/n);
@@ -28,16 +65,16 @@ SKILLS_DIR="{{SKILLS_DIR}}"
    question (sharpened or original) becomes `{QUESTION}` for all subsequent
    steps (including Claude's own independent analysis and all Codex prompt rounds).
 2. **Ask user** to choose reasoning effort level: `low`, `medium`, `high`, or `xhigh` (default: `high`). Gather factual context only (no premature opinion). Set `EFFORT`.
-3. Render round-1 prompt: `echo '{"QUESTION":"...","PROJECT_CONTEXT":"...","RELEVANT_FILES":"...","CONSTRAINTS":"..."}' | node "$RUNNER" render --skill codex-think-about --template round1 --skills-dir "$SKILLS_DIR"`.
+3. Render round-1 prompt: pipe JSON via heredoc to `node "$RUNNER" render --skill codex-think-about --template round1 --skills-dir "$SKILLS_DIR"` (see Stdin Format — use Branch 2 for dynamic QUESTION/PROJECT_CONTEXT values).
 4. **Start Codex + Claude Independent Analysis (parallel)**:
-   a. Start Codex thread: `node "$RUNNER" init --skill-name codex-think-about --working-dir "$PWD"` then pipe rendered prompt to `node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT" --sandbox danger-full-access`.
-   b. **Claude Independent Analysis (IMMEDIATELY, before polling)**: Render Claude analysis prompt via `echo '{"QUESTION":"...","PROJECT_CONTEXT":"...","RELEVANT_FILES":"...","CONSTRAINTS":"..."}' | node "$RUNNER" render --skill codex-think-about --template claude-analysis --skills-dir "$SKILLS_DIR"`. Analyze the question independently using own knowledge and optionally MCP tools. Follow the rendered format. Complete this BEFORE reading any Codex output. See `references/workflow.md` Step 2.5.
+   a. Start Codex thread: `node "$RUNNER" init --skill-name codex-think-about --working-dir "$PWD"` then pipe rendered prompt via `printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT" --sandbox danger-full-access`.
+   b. **Claude Independent Analysis (IMMEDIATELY, before polling)**: Render Claude analysis prompt via heredoc to `node "$RUNNER" render --skill codex-think-about --template claude-analysis --skills-dir "$SKILLS_DIR"` (see Stdin Format — use Branch 2 for dynamic values). Analyze the question independently using own knowledge and optionally MCP tools. Follow the rendered format. Complete this BEFORE reading any Codex output. See `references/workflow.md` Step 2.5.
    c. **INFORMATION BARRIER**: Do NOT read Codex's conclusions until Step 6. Poll activity telemetry (file reads, URLs, topics) is allowed for progress reporting.
 5. Poll: `node "$RUNNER" poll "$SESSION_DIR"` — returns JSON with `status`, `review.insights`, `review.considerations`, `review.recommendations`, `review.suggested_status`, and `activities`. Report **specific activities** from the activities array. NEVER report generic "Codex is running" — always extract concrete details.
 6. **Cross-Analysis**: After Codex completes, compare Claude's independent analysis with `review.insights`, `review.considerations`, `review.recommendations` from poll JSON. Identify genuine agreements, genuine disagreements, and unique perspectives. See `references/workflow.md` Step 4.
-7. **Render round 2+ prompt**: `echo '{"AGREED_POINTS":"...","DISAGREED_POINTS":"...","NEW_PERSPECTIVES":"...","CONTINUE_OR_CONSENSUS_OR_STALEMATE":"..."}' | node "$RUNNER" render --skill codex-think-about --template round2+ --skills-dir "$SKILLS_DIR"`.
-8. **Resume**: `echo "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 5 (Poll).** Repeat steps 5→6→7→8 until consensus, stalemate, or hard cap (5 rounds).
-9. **Finalize**: `echo '{"verdict":"...","scope":"think-about"}' | node "$RUNNER" finalize "$SESSION_DIR"`.
+7. **Render round 2+ prompt**: pipe JSON via heredoc to `node "$RUNNER" render --skill codex-think-about --template round2+ --skills-dir "$SKILLS_DIR"` (see Stdin Format — use Branch 2 for dynamic AGREED_POINTS/DISAGREED_POINTS/NEW_PERSPECTIVES values).
+8. **Resume**: `printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 5 (Poll).** Repeat steps 5→6→7→8 until consensus, stalemate, or hard cap (5 rounds).
+9. **Finalize**: pipe JSON via heredoc to `node "$RUNNER" finalize "$SESSION_DIR"` (see Stdin Format — use quoted heredoc for literal verdict values).
 10. **Cleanup**: `node "$RUNNER" stop "$SESSION_DIR"`. Present user-facing synthesis with agreements, disagreements, cited sources, and confidence.
 
 ### Effort Level Guide
