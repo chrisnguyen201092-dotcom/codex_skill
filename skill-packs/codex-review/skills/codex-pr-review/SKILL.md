@@ -1,244 +1,78 @@
 ---
 name: codex-pr-review
-description: Peer debate between Claude Code and Codex on PR quality and merge readiness. Both sides review independently, then debate until consensus — no code modifications made.
+description: Peer debate between Claude Code and Codex on PR quality and merge readiness. No code modifications.
 ---
 
 # Codex PR Review
 
 ## Purpose
-Use this skill to run peer debate on branch changes before merge — covering code quality, PR description, commit hygiene, scope, and merge readiness. Claude and Codex are equal analytical peers — Claude orchestrates the debate loop and final synthesis. No code is modified.
+Peer debate on branch changes before merge -- code quality, PR description, commit hygiene, scope, merge readiness.
 
 ## When to Use
-Before opening or merging a pull request. Covers branch diff, commit history, and PR description together in one pass — more thorough than `/codex-impl-review` for pre-merge scenarios.
+Before opening or merging a PR. More thorough than `/codex-impl-review` for pre-merge scenarios.
 
 ## Prerequisites
-- Current branch differs from base branch (has commits not in base).
-- `git diff <base>...HEAD` produces output.
+- Current branch differs from base branch with commits not in base.
 
 ## Runner
-
-```bash
 RUNNER="{{RUNNER_PATH}}"
 SKILLS_DIR="{{SKILLS_DIR}}"
 json_esc() { printf '%s' "$1" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify(d)))'; }
-```
 
-## Stdin Format Rules
-- **JSON** → `render`/`finalize`: heredoc. Literal-only → `<<'RENDER_EOF'`. Dynamic vars → escape with `json_esc`, use `<<RENDER_EOF` (unquoted).
-- **json_esc output includes quotes** → embed directly: `{"KEY":$(json_esc "$VAL")}`.
-- **Plain text** → `start`/`resume`: `printf '%s' "$PROMPT" | node "$RUNNER" ...` — NEVER `echo`.
-- **NEVER** `echo '{...}'` for JSON. Forbidden: NULL bytes (`\x00`).
+## Critical Rules (DO NOT skip)
+- Stdin: `printf '%s' "$PROMPT" | node "$RUNNER" ...` -- NEVER `echo`. JSON via heredoc.
+- Validate: `init` output must start with `CODEX_SESSION:`. `start`/`resume` must return valid JSON. `CODEX_NOT_FOUND`->tell user install codex.
+- `status === "completed"` means **Codex's turn is done** -- NOT that the debate is over. MUST check Loop Decision table.
+- Loop: Do NOT exit unless consensus or stalemate. No round cap.
+- Errors: `failed`->retry once (re-poll 15s). `timeout`->report partial, suggest lower effort. `stalled`+recoverable->`stop`->recovery `resume`->poll; not recoverable->report partial. Cleanup sequencing: `finalize`+`stop` ONLY after recovery resolves.
+- Cleanup: ALWAYS run `finalize` + `stop`, even on failure/timeout.
+- Runner manages all session state -- NEVER read/write session files manually.
+- **Information barrier**: Claude MUST complete independent analysis BEFORE reading Codex output.
+- **NEVER edit code or create commits** -- debate only.
+- For poll intervals and detailed error flows -> `Read references/protocol.md`
 
 ## Workflow
 
 ### 1. Collect Inputs
-Auto-detect context and announce defaults before asking anything.
+Base-branch: `git symbolic-ref refs/remotes/origin/HEAD`, fallback main/master. Validate `git rev-parse --verify`.
+Effort: <10 files=`medium`, 10-50=`high`, >50=`xhigh`. Announce defaults.
+Inputs: base branch, PR title/description (optional), branch diff, commit log, file stats, effort.
+Pre-flight: diff must exist, commits ahead > 0.
 
-**Base-branch detection**: `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null` (strip prefix); fallback: check `refs/remotes/origin/main` → `origin/master` → `refs/heads/main` → `refs/heads/master` via `git show-ref --verify --quiet`.
+### 2. Init + Render + Start (Do NOT poll yet)
+Init: `node "$RUNNER" init --skill-name codex-pr-review --working-dir "$PWD"`
+Render: template=`round1`. Placeholders: `PR_TITLE`, `PR_DESCRIPTION`, `BASE_BRANCH`, `COMMIT_COUNT`, `COMMIT_LIST`, `USER_REQUEST`, `SESSION_CONTEXT`.
+Start: `printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"`
 
-**Effort detection** (after base resolved): `FILES_CHANGED=$(git diff --name-only "$BASE"...HEAD | wc -l)` → <10: `medium`, 10–50: `high`, >50: `xhigh`; default `high`.
+### 3. Claude Independent Analysis (BEFORE polling)
+**INFORMATION BARRIER**: MUST NOT read Codex output.
+Render: template=`claude-analysis`. Read diff, commits, file stats, PR description. Write FINDING-{N} per `references/claude-analysis-template.md`. Overall Assessment + Merge Readiness Pre-Assessment. COMPLETE before Step 4.
 
-Announce: `"Detected: base=$BASE, effort=$EFFORT (N files changed). Proceeding — reply to override. PR title/description optional."` Block only if base cannot be resolved.
-
-**Inputs**: base branch (validated: `git rev-parse --verify <base>`), PR title/description (optional), branch diff (`git diff <base>...HEAD`), commit log (`git log <base>..HEAD --oneline`), commit list/count, file stats (`git diff <base>...HEAD --stat`), effort.
-
-### 2. Pre-flight Checks
-Verify git repo (`git rev-parse --show-toplevel`). Branch diff: `git diff <base>...HEAD --quiet` must FAIL (exit 1) — else abort "no diff". Commits: `git rev-list --count <base>..HEAD` > 0 — else abort "no commits ahead".
-
-### 3. Init Session
-```bash
-INIT_OUTPUT=$(node "$RUNNER" init --skill-name codex-pr-review --working-dir "$PWD")
-SESSION_DIR=${INIT_OUTPUT#CODEX_SESSION:}
-```
-Validate: `INIT_OUTPUT` must start with `CODEX_SESSION:`.
-
-### 4. Render Codex Prompt
-
-Template `round1`:
-```bash
-PROMPT=$(node "$RUNNER" render --skill codex-pr-review --template round1 --skills-dir "$SKILLS_DIR" <<RENDER_EOF
-{"PR_TITLE":$(json_esc "$PR_TITLE"),"PR_DESCRIPTION":$(json_esc "$PR_DESCRIPTION"),"BASE_BRANCH":$(json_esc "$BASE"),"COMMIT_COUNT":$(json_esc "$COMMIT_COUNT"),"COMMIT_LIST":$(json_esc "$COMMIT_LIST"),"USER_REQUEST":$(json_esc "$USER_REQUEST"),"SESSION_CONTEXT":$(json_esc "$SESSION_CONTEXT")}
-RENDER_EOF
-)
-```
-
-### 5. Start Round 1
-```bash
-printf '%s' "$PROMPT" | node "$RUNNER" start "$SESSION_DIR" --effort "$EFFORT"
-```
-Validate JSON: `{"status":"started","round":1}`. Error with `CODEX_NOT_FOUND` → tell user to install codex. **Do NOT poll yet — proceed to Step 6.**
-
-### 6. Claude Independent Analysis
-
-**INFORMATION BARRIER**: MUST NOT read any Codex output until analysis is complete.
-
-Render Claude analysis prompt (template `claude-analysis`):
-```bash
-CLAUDE_PROMPT=$(node "$RUNNER" render --skill codex-pr-review --template claude-analysis --skills-dir "$SKILLS_DIR" <<RENDER_EOF
-{"PR_TITLE":$(json_esc "$PR_TITLE"),"PR_DESCRIPTION":$(json_esc "$PR_DESCRIPTION"),"BASE_BRANCH":$(json_esc "$BASE"),"COMMIT_COUNT":$(json_esc "$COMMIT_COUNT"),"COMMIT_LIST":$(json_esc "$COMMIT_LIST")}
-RENDER_EOF
-)
-```
-
-**Instructions:**
-Read rendered prompt → read diff (`git diff <base>...HEAD`), commits (`git log`, `git show <SHA>`), file stats, PR title/description → write FINDING-{N} per `references/claude-analysis-template.md` → Overall Assessment (Code quality, PR description accuracy, Commit hygiene, Scope appropriateness) → Merge Readiness Pre-Assessment (must-pass status, blocking issues, recommendation) → Strongest Positions. **CRITICAL**: Complete BEFORE Step 7.
-
-### 7. Poll
-```bash
-POLL_JSON=$(node "$RUNNER" poll "$SESSION_DIR")
-```
-**Poll intervals**: Round 1: 60s, 60s, 30s, 15s+. Round 2+: 30s, 15s+.
-
-Report **specific activities** from `activities` array (e.g. "Codex [60s]: reading branch diff, analyzing commit hygiene"). NEVER report generic "Codex is running".
-
-Continue while `status === "running"`. Stop on `completed|failed|timeout|stalled`.
-
-**Note**: `status === "completed"` means Codex finished its turn — it does NOT mean the debate is over. After `completed`, check the Loop Decision table to determine whether to continue or exit.
-
-### 8. Cross-Analysis
-Parse `review.blocks` (each: `id`, `title`, `severity`, `category`, `location`, `problem`, `evidence`) and `review.overall_assessment` (code_quality, pr_description_accuracy, commit_hygiene, scope_appropriateness) from poll JSON. Verdict in `review.verdict.status`. Fallback: `review.raw_markdown`.
-
-**Compare** Claude FINDING-{N} vs Codex ISSUE-{N}:
-
-| Classification | Meaning |
-|---------------|---------|
-| Agreement | Both independently found same issue |
-| Disagreement | Opposing assessment |
-| Claude-only | Claude found, Codex did not |
-| Codex-only | Codex found, Claude did not |
-| Same Direction, Different Severity | Both found, disagree on severity |
-
-**Build response**: 1) Agreements — merged findings. 2) Disagreements — Claude's position + evaluation of Codex's. 3) New findings — Claude-only + evaluation of Codex-only. 4) Set status: CONTINUE/CONSENSUS/STALEMATE. **Claude orchestration is authoritative** — Codex VERDICT is advisory.
-
-### 9. Render Rebuttal + Resume
-
-Template `round2+`:
-```bash
-PROMPT=$(node "$RUNNER" render --skill codex-pr-review --template round2+ --skills-dir "$SKILLS_DIR" <<RENDER_EOF
-{"SESSION_CONTEXT":$(json_esc "$SESSION_CONTEXT"),"PR_TITLE":$(json_esc "$PR_TITLE"),"BASE_BRANCH":$(json_esc "$BASE"),"COMMIT_COUNT":$(json_esc "$COMMIT_COUNT"),"COMMIT_LIST":$(json_esc "$COMMIT_LIST"),"AGREED_POINTS":$(json_esc "$AGREED_POINTS"),"DISAGREED_POINTS":$(json_esc "$DISAGREED_POINTS"),"NEW_FINDINGS":$(json_esc "$NEW_FINDINGS"),"CONTINUE_OR_CONSENSUS_OR_STALEMATE":$(json_esc "$STATUS")}
-RENDER_EOF
-)
-```
-
-Resume: `printf '%s' "$PROMPT" | node "$RUNNER" resume "$SESSION_DIR" --effort "$EFFORT"` → validate JSON. **Go back to step 7 (Poll).**
-
-### Loop Decision (after each poll returns `status === "completed"`)
-
-`status === "completed"` means **Codex's turn is done** — NOT that the debate is over. Claude orchestration is authoritative for stop/continue. Check IN ORDER (first match wins):
+### 4. Poll -> Cross-Analysis -> Resume Loop
+Poll + report activities. (-> `references/protocol.md` for intervals)
+Parse `review.blocks[]` + `review.overall_assessment` (code_quality, pr_description_accuracy, commit_hygiene, scope_appropriateness). Fallback: `review.raw_markdown`.
+Compare Claude FINDING-{N} vs Codex ISSUE-{N}: Agreement, Disagreement, Claude-only, Codex-only, Same Direction Different Severity.
+Claude orchestration is authoritative -- Codex VERDICT is advisory.
+Render: template=`round2+`. Placeholders: `SESSION_CONTEXT`, `PR_TITLE`, `BASE_BRANCH`, `COMMIT_COUNT`, `COMMIT_LIST`, `AGREED_POINTS`, `DISAGREED_POINTS`, `NEW_FINDINGS`, `CONTINUE_OR_CONSENSUS_OR_STALEMATE`.
+Resume + back to Poll.
 
 | # | Condition | Action |
 |---|-----------|--------|
-| 1 | Claude determines Full or Partial Consensus (no severity ≥ medium disagreements) | **EXIT loop** → go to Completion step |
-| 2 | `poll_json.convergence.stalemate === true` | **EXIT loop** → go to Completion step (stalemate branch) |
-| 3 | Disagreements remain with severity ≥ medium | **CONTINUE** → go back to Cross-Analysis step |
+| 1 | Full/Partial Consensus (no severity >= medium disagreements) | EXIT -> step 5 |
+| 2 | convergence.stalemate === true | EXIT -> step 5 (stalemate) |
+| 3 | Disagreements severity >= medium remain | CONTINUE -> Cross-Analysis |
 
-**CRITICAL**: Do NOT exit the loop unless condition 1 or 2 is met. Codex VERDICT is advisory — if Claude sees unresolved disagreements, MUST continue even if Codex says CONSENSUS. There is no round cap — debate continues until consensus or stalemate.
+### 5. Completion + Output
+Report: Review Summary (Rounds, Verdict, Findings, Agreed/Disagreed), FINDING<->ISSUE Mapping, Overall Assessment table (Code quality/PR description/Commit hygiene/Scope), **Merge Readiness Scorecard** (must-pass: bug, security; conditional: edge-case if high+).
+Merge Recommendation: any agreed critical must-pass=REJECT; >=3 agreed high must-pass=REJECT; any agreed high must-pass=REVISE; else MERGE.
+Stalemate: produce scorecard from agreed findings, present disagreements, defer to user.
 
-### 10. Completion + Stalemate
+### 6. Finalize + Cleanup
+`finalize` + `stop`. Always run. (-> `references/protocol.md` for error handling)
 
-**Consensus definitions**: Full (no disagreements), Partial (overall matches but ≤2 minor disagreements, severity ≤ low), No Consensus (severity ≥ medium disagreements remain → continue or stalemate).
-
-**Stop triggers**: Full/Partial Consensus; stalemate (same pairs 2 consecutive rounds, no new evidence); user stops.
-
-`poll_json.convergence.stalemate === true` → present deadlocked issues with both sides' arguments. Ask user to decide. Still produce Merge Readiness Scorecard from agreed findings — disagreed findings do not block scorecard.
-
-**Authority**: Claude orchestration is authoritative for stop/continue. Codex VERDICT is advisory.
-
-### 11. Final Output
-
-Present consensus report + merge readiness — **NEVER edit code or create commits**.
-
-**Review Summary:**
-
-| Metric | Value |
-|--------|-------|
-| Rounds | {N} |
-| Verdict | CONSENSUS / STALEMATE |
-| Claude Findings | {count} |
-| Codex Issues | {count} |
-| Agreed | {count} |
-| Disagreed | {count} |
-
-Present: FINDING↔ISSUE Mapping table (Claude FINDING | Codex ISSUE | Classification | Status), Consensus Points, Remaining Disagreements (Point | Claude | Codex).
-
-**Overall Assessment:**
-
-| Aspect | Claude | Codex | Consensus |
-|--------|--------|-------|-----------|
-| Code quality | | | |
-| PR description accuracy | | | |
-| Commit hygiene | | | |
-| Scope appropriateness | | | |
-
-**Merge Readiness Scorecard** (derived from agreed findings only):
-
-| Criterion | Must-pass? | Claude | Codex | Consensus | Status |
-|-----------|-----------|--------|-------|-----------|--------|
-| Code correctness (bug) | ✅ Yes | | | | |
-| Edge case handling | ⚠️ If high+ | | | | |
-| Security | ✅ Yes | | | | |
-| Performance | ❌ Unless critical | | | | |
-| Maintainability | ❌ No | | | | |
-| PR description | ❌ No | | | | |
-| Commit hygiene | ❌ No | | | | |
-| Scope appropriateness | ❌ No | | | | |
-
-Per criterion: **pass** = no agreed finding severity ≥ medium; **concern** = agreed finding severity = medium (non-blocking); **fail** = agreed finding severity ≥ high.
-
-**Merge Recommendation** (priority top-to-bottom, first match):
-
-| # | Condition | Recommendation |
-|---|-----------|---------------|
-| 1 | Any agreed critical in must-pass (bug, security) | **REJECT** ❌ |
-| 2 | ≥3 agreed high in must-pass | **REJECT** ❌ |
-| 3 | Any agreed high in must-pass | **REVISE** ⚠️ |
-| 4 | Any agreed high in edge-case | **REVISE** ⚠️ |
-| 5 | ≥3 agreed medium in must-pass | **REVISE** ⚠️ |
-| 6 | All remaining | **MERGE** ✅ |
-
-Must-pass: `bug`, `security`. Conditional: `edge-case` (severity ≥ high → must-pass). Disagreed findings do NOT block merge — if a disagreed finding could change recommendation, note: "⚠️ If {point} confirmed, recommendation → {REVISE/REJECT}."
-
-### 12. Finalize + Cleanup
-```bash
-node "$RUNNER" finalize "$SESSION_DIR" <<'FINALIZE_EOF'
-{"verdict":"...","scope":"branch"}
-FINALIZE_EOF
-```
-Optionally include `"issues":{"total_found":N,"agreed":N,"disagreed":N}`. Report `$SESSION_DIR` path.
-
-```bash
-node "$RUNNER" stop "$SESSION_DIR"
-```
-**Always run cleanup**, even on failure/timeout.
-
-**Errors**:
-- `failed` → retry once (re-poll after 15s).
-- `timeout` → report partial results from `review.raw_markdown`, suggest lower effort. Run cleanup.
-- `stalled` → if `recoverable === true`: `stop` → prepend recovery note → `resume --recovery` → poll (30s, 15s+). If `recoverable === false`: report partial results, suggest lower effort. Run cleanup.
-- Start/resume `CODEX_NOT_FOUND` → tell user to install codex.
-- **Cleanup sequencing**: run `finalize` + `stop` ONLY after recovery resolves (success or second failure). Do NOT finalize before recovery attempt.
-
-## Flavor Text
-
-Load `references/flavor-text.md` at skill start. Pick 1 random message per trigger from the matching pool — never repeat within session. Display as blockquote. Replace `{N}`, `{TOTAL}`, etc. with actual values. User can disable with "no flavor" or "skip humor".
-
-**Triggers** (insert flavor text AT these workflow moments):
-- **Step 1** (after announce): `SKILL_START`
-- **Step 7** (each poll while running): `POLL_WAITING` (only on first poll per round to avoid spam)
-- **Step 7** (poll completed): `CODEX_RETURNED`
-- **Step 8** (cross-analysis start): `THINK_PEER`
-- **Step 8** (per agreement found): `THINK_AGREE`
-- **Step 8** (per disagreement found): `THINK_DISAGREE`
-- **Step 9** (before resume): `SEND_REBUTTAL`
-- **Step 9** (round >= 3): `LATE_ROUND`
-- **Step 10** (consensus): `APPROVE_VICTORY` — (stalemate): `STALEMATE_DRAW`
-- **Step 11** (final output): `FINAL_SUMMARY`
+## Flavor Text Triggers
+SKILL_START, POLL_WAITING, CODEX_RETURNED, THINK_PEER, THINK_AGREE, THINK_DISAGREE, SEND_REBUTTAL, LATE_ROUND, APPROVE_VICTORY, STALEMATE_DRAW, FINAL_SUMMARY
 
 ## Rules
-- **Safety**: NEVER run `git commit`, `git add`, `git rebase`, or any command that modifies code or history. This skill is debate-only.
-- Both Claude and Codex are equal peers — no reviewer/implementer framing.
-- **Information barrier**: Claude MUST complete independent analysis (Step 6) before reading Codex output. This prevents anchoring bias.
-- **NEVER edit code or create commits** — only debate quality and assess merge readiness. The final output is a consensus report + merge readiness scorecard, not a fix.
-- Codex reviews only; it does not edit files.
-- If stalemate persists (same unresolved points for 2 consecutive rounds), present both sides, produce Merge Readiness Scorecard from agreed findings, and defer to user.
-- **Runner manages all session state** — do NOT manually read/write `rounds.json`, `meta.json`, or `prompt.txt` in the session directory.
+- **Safety**: NEVER `git commit`, `git add`, `git rebase`, or modify code/history.
+- Both Claude and Codex are equal peers. Codex reviews only, no edits.
